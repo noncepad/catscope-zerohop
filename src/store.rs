@@ -11,29 +11,28 @@ use solana_sdk::{
 
 use crate::{err::CatscopeZerohopError, util::bytes_to_struct};
 
-/// TODO: Document what slot status values mean.
+/// The time and status of a block.
 ///
 /// # Fields
 ///
-/// * `slot` - TODO: Document the slot number
-/// * `status` - TODO: Document status codes (e.g., 0 = pending, 1 = confirmed, 2 = finalized, etc.)
+/// * `slot` - the chain clock value
+/// * `status` - 0 = pending, 10 = failed, 12 = finalized
 #[derive(Clone, Debug)]
 pub struct SlotWithStatus {
     /// TODO: Document the slot number
     pub slot: Slot,
-    /// TODO: Document status code meanings
+    /// 0 means the validator has received the transaction.
+    /// 10 means the transaction has failed.
     pub status: SlotStatusU8,
 }
 pub type SlotStatusU8 = u8;
 pub trait BlobInterface: BlobView + BlobWrite {}
 
-/// TODO: Document when to use StructBlob and its lifecycle.
-///
-/// Store a struct backed by a blob.
+/// NamedBlob wraps a Blob.
 ///
 /// # Type Parameters
 ///
-/// * `T` - TODO: Document constraints on T (alignment, size, etc.)
+/// * `T` - a 64 byte aligned, sized struct
 ///
 /// # Example
 ///
@@ -41,7 +40,7 @@ pub trait BlobInterface: BlobView + BlobWrite {}
 /// use catscope_zerohop::store::NamedBlob;
 ///
 /// // TODO: Add example of creating and using StructBlob
-/// // let blob: StructBlob<MyStruct> = ...;
+/// // let blob: NamedBlob<MyStruct> = ...;
 /// // let payload = blob.payload_mut()?;
 /// ```
 pub struct NamedBlob<T: Sized> {
@@ -60,25 +59,12 @@ impl<T: Sized> NamedBlob<T> {
             _d: PhantomData::default(),
         })
     }
-    /// TODO: Document when this returns None vs Some and mutable access rules.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document None/Some conditions
-    #[allow(clippy::mut_from_ref)]
-    pub fn payload_mut(&self) -> Option<&mut MaybeUninit<T>> {
-        let slice = self.blob.slice_mut()?;
-        assert_eq!(slice.len(), std::mem::size_of::<MaybeUninit<T>>());
-        let ptr = slice.as_mut_ptr() as *mut _;
-        let ans: &mut MaybeUninit<T> = unsafe { &mut *ptr };
-        Some(ans)
-    }
 
-    /// TODO: Document when to use this for reading vector payloads.
+    /// Cast a byte slice as an array of T.
     ///
     /// # Returns
     ///
-    /// TODO: Document the slice returned
+    /// Returns an array of T.
     pub fn vec_payload(&self) -> &[MaybeUninit<T>] {
         let slice = self.blob.slice();
         let n = std::mem::size_of::<MaybeUninit<T>>();
@@ -87,49 +73,34 @@ impl<T: Sized> NamedBlob<T> {
         let ptr = slice.as_ptr() as *const _;
         unsafe { std::slice::from_raw_parts(ptr, count) }
     }
-
-    /// TODO: Document mutable vector access and when this returns None.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document None/Some conditions
-    #[allow(clippy::mut_from_ref)]
-    pub fn vec_payload_mut(&self) -> Option<&mut [MaybeUninit<T>]> {
-        let slice = self.blob.slice_mut()?;
-        let n = std::mem::size_of::<MaybeUninit<T>>();
-        assert_eq!(slice.len() % n, 0);
-        let count = slice.len() / n;
-        let ptr = slice.as_mut_ptr() as *mut _;
-        Some(unsafe { std::slice::from_raw_parts_mut(ptr, count) })
-    }
 }
 
-/// TODO: Document when to implement this trait and write access patterns.
+/// Write to a blob.
 #[allow(clippy::mut_from_ref)]
 pub trait BlobWrite: Send + Sync {
-    /// TODO: Document when this returns None and thread safety.
+    /// Get a mutable slice to write into.
     ///
     /// # Returns
     ///
-    /// TODO: Document None/Some conditions for mutable slice access
+    /// Returns None if the slice has already been written to.
     fn slice_mut(&self) -> Option<&mut [u8]>;
 }
 
-/// TODO: Document when to implement this trait for read-only blob access.
+/// View the underlying byte slice.
 pub trait BlobView: Send + Sync {
-    /// TODO: Document the blob length in bytes
     fn len(&self) -> usize;
+    /// Get the length of the slice.
 
-    /// TODO: Document empty check behavior
+    /// Is the slice empty
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// TODO: Document the slice lifetime and thread safety
+    /// Access the underlying byte slice.
     fn slice(&self) -> &[u8];
 }
 
-/// TODO: Document the Solana account structure and its components.
+/// Access an underlying Solana Account.
 ///
 /// # Example
 ///
@@ -137,7 +108,7 @@ pub trait BlobView: Send + Sync {
 /// use catscope_zerohop::store::SolanaAccount;
 ///
 /// fn process_account(account: &SolanaAccount) {
-///     // TODO: Add example of accessing account data
+///     // Access the SOL balance, graph edges, and account data.
 ///     // let header = account.header();
 ///     // let data = account.data();
 ///     // let edges = account.edge();
@@ -165,7 +136,7 @@ impl SolanaAccount {
     pub fn slice(&self) -> &[u8] {
         self.blob.slice()
     }
-    /// TODO: Document what the ticket represents and its uses.
+    /// Return the write version number.
     pub fn ticket(&self) -> Ticket {
         self.ticket
     }
@@ -219,48 +190,42 @@ impl std::fmt::Debug for SolanaAccount {
     }
 }
 
-/// TODO: Document what a ticket represents in the system
+/// This represents the globally monotonically increasing `u64`
+/// version number assigned to every account version.
 pub type Ticket = u64;
 
-/// TODO: Document the account ID system and uniqueness guarantees
+/// Catscope assigns a 1 to 1 mapping of `u64` to `Pubkey`
 pub type AccountId = u64;
 
-/// TODO: Document the account header layout and memory representation.
-///
-/// Use this to store accounts.
+/// This is the header for a Solana account.
 ///
 /// # Layout
 ///
-/// TODO: Document the C layout requirements and alignment
-///
 /// # Fields
 ///
-/// * `pubkey` - TODO: Document the account's public key
-/// * `lamports` - Lamports in the account (TODO: add more details)
-/// * `account_id` - TODO: Document the internal account ID
-/// * `owner` - The program that owns this account. If executable, the program that loads this account. (TODO: add more details)
-/// * `rent_epoch` - The epoch at which this account will next owe rent (TODO: add more details)
-/// * `slot` - TODO: Document which slot this account state is from
-/// * `data_size` - TODO: Document the account data size
-/// * `executable` - This account's data contains a loaded program (and is now read-only) (TODO: add more details)
+/// * `pubkey` - this is the ecdsa 32B public key
+/// * `lamports` - Lamports in the account
+/// * `account_id` - this is the `u64` assigned to the `pubkey` by Catscope
+/// * `owner` - The program that owns this account. If executable, the program that loads this account.
+/// * `rent_epoch` - The epoch at which this account will next owe rent
+/// * `slot` - This is the slot at whicih the transaction was registered.
+/// * `data_size` - This is the size of the account data.
+/// * `executable` - This account's data contains a loaded program (and is now read-only)
 #[repr(C, align(8))]
 #[derive(Default, Copy, Debug, Clone, PartialEq, Eq)]
 pub struct AccountHeader {
-    /// TODO: Document the account's public key
+    /// account public key
     pub pubkey: Pubkey,
     /// lamports in the account
     pub lamports: u64,
-    /// TODO: Document the account ID
+    /// account ID
     pub account_id: AccountId,
     /// the program that owns this account. If executable, the program that loads this account.
     pub owner: Pubkey,
     /// the epoch at which this account will next owe rent
     pub rent_epoch: u64,
-    /// TODO: Document the slot number
     pub slot: u64,
-    /// this account's data contains a loaded program (and is now read-only)
     pub data_size: u32,
-    /// TODO: Document executable flag meaning
     pub executable: bool,
 }
 impl AccountHeader {
@@ -286,34 +251,28 @@ impl Ord for AccountHeader {
     }
 }
 
-/// TODO: Document the weight system and filtering
+/// This is weight on a graph edge.
 pub type Weight = u32;
 
-/// TODO: Document depth in graph traversal
+/// Depth is how far from subscription root account an account being traversed is.
 pub type Depth = u8;
 
-/// TODO: Document the account edge structure in the graph.
+/// Graph edge between two accounts.
 ///
 /// # Layout
 ///
-/// TODO: Document C layout requirements
+/// ## Fields
 ///
-/// # Fields
-///
-/// * `from` - TODO: Document source account
-/// * `to` - TODO: Document destination account
-/// * `weight` - TODO: Document edge weight meaning
-/// * `slot` - TODO: Document when this edge was created
+/// * `from` - source account
+/// * `to` - destination account
+/// * `weight` - edge weight
+/// * `slot` - deprecated
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Eq)]
 pub struct AccountEdge {
-    /// TODO: Document the source account
     pub from: AccountId,
-    /// TODO: Document the destination account
     pub to: AccountId,
-    /// TODO: Document the edge weight
-    pub weight: u32,
-    /// TODO: Document the slot
+    pub weight: Weight,
     pub slot: Slot,
 }
 impl PartialEq for AccountEdge {
@@ -388,47 +347,28 @@ pub const WEIGHT_SYMLINK: Weight = 1 << 8;
 pub const MAX_WEIGHT_ACCOUNT_EXPONENT: u8 = 9;
 pub const MAX_WEIGHT: Weight = 1 << MAX_WEIGHT_ACCOUNT_EXPONENT;
 
-/// TODO: Document the ViewAccount trait and when to implement it.
-///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::store::{ViewAccount, AccountId, SolanaAccount};
-///
-/// struct MyAccountStore {
-///     // TODO: Add your storage
-/// }
-///
-/// impl ViewAccount for MyAccountStore {
-///     fn load_account(&self, account_id: &AccountId) -> Option<SolanaAccount> {
-///         // TODO: Implement account loading
-///         None
-///     }
-/// }
+/// Load the latest finalized version of a Solana account.
 /// ```
 pub trait ViewAccount {
-    /// TODO: Document account loading behavior and when this returns None.
     ///
     /// # Returns
     ///
-    /// TODO: Document None/Some conditions
+    /// Returns a Solana account if it exists.
     fn load_account(&self, account_id: &AccountId) -> Option<SolanaAccount>;
 }
 
-/// TODO: Document the transaction result header structure.
+/// Show a transaction result as recorded by the Geyser interface.
 ///
 /// # Layout
 ///
-/// TODO: Document C layout requirements
 #[repr(C, align(8))]
 pub struct TransactionResultHeader {
-    /// TODO: Document the transaction signature
+    /// The first signature in the transaction
     pub signature: Signature,
-    /// TODO: Document the slot where transaction was processed
+    /// The slot where transaction was processed
     pub slot: Slot,
-    /// TODO: Document what count represents
     count: u32,
-    /// TODO: Document success/failure flag
+    /// The success/failure flag
     pub success: bool,
 }
 
