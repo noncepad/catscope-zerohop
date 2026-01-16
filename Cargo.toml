@@ -1,16 +1,31 @@
 [package]
 name = "catscope-zerohop"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]
 log = "0.4.29"
 lockfree = "0.5.1"
 env_logger = "0.11.8"
-solana-sdk = "3.0.0"
+agave-geyser-plugin-interface = "=3.1.5"
+solana-sdk = "=3.0.0"
 flume = "0.11"
+iceoryx2 = "0.6"
 crossbeam-channel = "0.5.15"
 crossbeam = "0.8.4"
 serde = "1.0.228"
+solana-client = "=3.1.5"
+solana-connection-cache = "=3.1.5"
+solana-tpu-client = "=3.1.5"
+solana-quic-client = "=3.1.5"
+solana-streamer = "=3.1.5"
+tokio = { version = "1.44", features = ["full"] }
+bincode = "1.3"
+signal-hook = "0.3"
+
 [dev-dependencies]
 num_cpus = "1.17.0"
+
+[[bin]]
+name = "catfwd"
+path = "src/bin/catfwd.rs"

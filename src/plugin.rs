@@ -8,55 +8,29 @@ use crate::{
     write::{Scheduler, TransactionProcessor},
 };
 
-/// TODO: Document the plugin interface and lifecycle.
+/// ======================================================================
+/// ZEROHOP PLUGIN INTERFACE
+/// ======================================================================
 ///
-/// This is the main interface that plugins must implement to integrate with Catscope Zerohop.
+/// This file defines the boundary between the ZeroHop runtime and user plugins.
 ///
-/// # Example
+/// A plugin is loaded by the ZeroHop host, given read/write handles into the
+/// validator-local runtime, and expected to manage its own lifecycle.
+
+/// Main interface that every ZeroHop plugin must implement.
 ///
-/// ```ignore
-/// use catscope_zerohop::plugin::{ZerohopInterface, CatscopeReader, CatscopeWriter};
-/// use catscope_zerohop::err::CatscopeZerohopError;
-/// use std::sync::Arc;
-///
-/// struct MyPlugin {
-///     // TODO: Add your plugin state
-/// }
-///
-/// impl ZerohopInterface for MyPlugin {
-///     fn on_load(
-///         &mut self,
-///         catscope_reader: Arc<dyn CatscopeReader>,
-///         o_catscope_writer: Arc<dyn CatscopeWriter>,
-///         configuration: &str,
-///     ) -> Result<(), CatscopeZerohopError> {
-///         // TODO: Initialize plugin with reader and writer
-///         Ok(())
-///     }
-///
-///     fn shutdown(&self) {
-///         // TODO: Implement graceful shutdown
-///     }
-///
-///     fn on_unload(&mut self) -> Result<(), CatscopeZerohopError> {
-///         // TODO: Cleanup resources
-///         Ok(())
-///     }
-/// }
-/// ```
+/// The host owns plugin creation and destruction. Plugins are notified
+/// synchronously when they are loaded and unloaded.
 pub trait ZerohopInterface: Send + Sync {
-    /// TODO: Document the plugin loading process and initialization.
+    /// Called once when the plugin is loaded by the ZeroHop host.
     ///
-    /// Once loaded, the plugin shall receive a reader and writer.
+    /// This is where the plugin should:
+    /// - store the reader/writer handles
+    /// - parse configuration
+    /// - start any background tasks
     ///
-    /// # Arguments
-    ///
-    /// * `catscope_reader` - TODO: Document reader capabilities
-    /// * `o_catscope_writer` - TODO: Document writer capabilities (optional?)
-    ///
-    /// # Errors
-    ///
-    /// TODO: Document when this returns an error and what happens
+    /// `catscope_reader` provides read-only access to accounts and graphs.
+    /// `o_catscope_writer` provides optional transaction submission capability.
     fn on_load(
         &mut self,
         catscope_reader: Arc<dyn CatscopeReader>,
@@ -64,52 +38,41 @@ pub trait ZerohopInterface: Send + Sync {
         configuration_json_data: &str,
     ) -> Result<(), CatscopeZerohopError>;
 
-    /// TODO: Document the unload process and cleanup requirements.
+    /// Called when the plugin is being unloaded.
     ///
-    /// Called by the host when the validator is about to be unloaded.
-    ///
-    /// # Errors
-    ///
-    /// TODO: Document error conditions
+    /// The plugin should stop background work and release resources.
     fn unload(&mut self) -> Result<(), CatscopeZerohopError>;
 }
 
-/// TODO: Document the CatscopeReader trait and its combined capabilities.
+/// ======================================================================
+/// READER INTERFACE
+/// ======================================================================
 ///
-/// Combines GraphClient, PubkeyMap, and ViewAccount functionality.
+/// Read-only view into validator-local state.
 ///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::plugin::CatscopeReader;
-///
-/// fn use_reader(reader: &dyn CatscopeReader) {
-///     // TODO: Add example of using reader capabilities
-///     // let channels = reader.connect()?;
-///     // let pubkey = reader.account_id_exists(&account_id)?;
-///     // let account = reader.get(&account_id)?;
-/// }
-/// ```
+/// This is the primary way plugins observe:
+/// - account state
+/// - graph relationships
+/// - pubkey ↔ account-id mappings
 pub trait CatscopeReader: GraphClient + PubkeyMap + ViewAccount {}
 
-/// TODO: Document the CatscopeWriter trait and its combined capabilities.
+/// ======================================================================
+/// WRITER INTERFACE
+/// ======================================================================
 ///
-/// Combines TransactionProcessor and Scheduler functionality.
+/// Write-side interface for submitting transactions.
 ///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::plugin::CatscopeWriter;
-///
-/// fn use_writer(writer: &dyn CatscopeWriter) {
-///     // TODO: Add example of using writer capabilities
-///     // writer.send(client_id, &transaction_data)?;
-///     // writer.batch(client_id, &bundle)?;
-/// }
-/// ```
 pub trait CatscopeWriter: TransactionProcessor + Scheduler {}
 
+/// ======================================================================
+/// LOGGER INITIALIZATION
+/// ======================================================================
+///
+/// Initializes a shared logger for plugins and runtime.
+///
+/// Safe to call multiple times.
 static INIT: Once = Once::new();
+
 pub fn init_logger() {
     INIT.call_once(|| {
         env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();

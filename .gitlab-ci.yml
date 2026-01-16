@@ -41,7 +41,7 @@ deploy_source:
   variables:
     COMMIT_MSG: "doing update"
     # do not increase major version past 0 or else go list will fail
-    AGAVE_BASE: "v3.1.2"
+    AGAVE_BASE: "v3.1.5"
     TARGET_PROJECT: ${CI_PROJECT_NAME}
     TARGET_GIT_DIR: "/var/share/noncepad/git/${TARGET_PROJECT}.git"
   needs:

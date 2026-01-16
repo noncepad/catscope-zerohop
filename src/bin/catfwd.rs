@@ -1,0 +1,52 @@
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+use catscope_zerohop::{
+    plugin::init_logger,
+    quic::{QuicRequestHandler, SolanaQuicClient},
+    txfwd::server,
+};
+use log::error;
+use signal_hook::{
+    consts::signal::{SIGINT, SIGTERM},
+    iterator::Signals,
+};
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::{signature::Keypair, signer::EncodableKey};
+
+fn main() {
+    init_logger();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_signal = shutdown.clone();
+
+    let mut signals = Signals::new([SIGINT, SIGTERM]).expect("failed to register signals");
+    std::thread::spawn(move || {
+        let mut l_sig = signals.wait();
+        let sig = l_sig.next().unwrap();
+        match sig {
+            SIGINT => error!("received SIGINT, shutting down..."),
+            SIGTERM => error!("received SIGTERM, shutting down..."),
+            _ => {}
+        }
+        shutdown_signal.store(true, Ordering::Relaxed);
+    });
+
+    let rpc_client = RpcClient::new(std::env::var("RPC_URL").expect("need RPC_URL"));
+    let keypair = Keypair::read_from_file(std::env::var("KEYPAIR").expect("need KEYPAIR")).unwrap();
+    let quic_client =
+        SolanaQuicClient::new(keypair, None).expect("quic client configuration failed");
+    let handler =
+        QuicRequestHandler::new(rpc_client, quic_client).expect("failed to create handler");
+    let p = PathBuf::from(std::env::var("BUFFER_PATH").expect("need BUFFER_PATH"));
+    let max_client: usize = match std::env::var("MAX_CLIENT") {
+        Ok(x) => x.parse().expect("failed to parse MAX_CLIENT"),
+        Err(_) => 6,
+    };
+
+    server(p.as_path(), handler, max_client, shutdown).unwrap();
+}

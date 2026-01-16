@@ -1,3 +1,4 @@
+/// Core data structures shared between the CatScope runtime and plugins.
 use std::{
     collections::HashSet,
     marker::PhantomData,
@@ -5,44 +6,42 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
+use agave_geyser_plugin_interface::geyser_plugin_interface::SlotStatus;
 use solana_sdk::{
     clock::Slot, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
 };
 
 use crate::{err::CatscopeZerohopError, util::bytes_to_struct};
 
+/// ======================================================================
+/// LIFECYCLE & IDENTITY
+/// ======================================================================
 /// The time and status of a block.
-///
-/// # Fields
 ///
 /// * `slot` - the chain clock value
 /// * `status` - 0 = pending, 10 = failed, 12 = finalized
 #[derive(Clone, Debug)]
 pub struct SlotWithStatus {
-    /// TODO: Document the slot number
     pub slot: Slot,
-    /// 0 means the validator has received the transaction.
-    /// 10 means the transaction has failed.
-    pub status: SlotStatusU8,
+    pub status: SlotStatus,
 }
-pub type SlotStatusU8 = u8;
+
+/// Monotonically increasing `u64` version number assigned to every account version.
+pub type Ticket = u64;
+
+/// Catscope assigns a 1 to 1 mapping of `u64` to `Pubkey`
+pub type AccountId = u64;
+
+/// ======================================================================
+/// SHARED MEMORY & ZERO-COPY PRIMITIVES
+/// ======================================================================
+
+/// Combined read/write interface for a shared memory blob.
 pub trait BlobInterface: BlobView + BlobWrite {}
 
 /// NamedBlob wraps a Blob.
 ///
-/// # Type Parameters
-///
 /// * `T` - a 64 byte aligned, sized struct
-///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::store::NamedBlob;
-///
-/// // TODO: Add example of creating and using StructBlob
-/// // let blob: NamedBlob<MyStruct> = ...;
-/// // let payload = blob.payload_mut()?;
-/// ```
 pub struct NamedBlob<T: Sized> {
     blob: Arc<dyn BlobInterface>,
     _d: PhantomData<T>,
@@ -62,8 +61,6 @@ impl<T: Sized> NamedBlob<T> {
 
     /// Cast a byte slice as an array of T.
     ///
-    /// # Returns
-    ///
     /// Returns an array of T.
     pub fn vec_payload(&self) -> &[MaybeUninit<T>] {
         let slice = self.blob.slice();
@@ -80,12 +77,11 @@ impl<T: Sized> NamedBlob<T> {
 pub trait BlobWrite: Send + Sync {
     /// Get a mutable slice to write into.
     ///
-    /// # Returns
-    ///
     /// Returns None if the slice has already been written to.
     fn slice_mut(&self) -> Option<&mut [u8]>;
 }
 
+/// Read-only view into a shared memory buffer.
 /// View the underlying byte slice.
 pub trait BlobView: Send + Sync {
     fn len(&self) -> usize;
@@ -100,20 +96,11 @@ pub trait BlobView: Send + Sync {
     fn slice(&self) -> &[u8];
 }
 
-/// Access an underlying Solana Account.
-///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::store::SolanaAccount;
-///
-/// fn process_account(account: &SolanaAccount) {
-///     // Access the SOL balance, graph edges, and account data.
-///     // let header = account.header();
-///     // let data = account.data();
-///     // let edges = account.edge();
-/// }
-/// ```
+/// ======================================================================
+/// SOLANA ACCOUNT SNAPSHOTS
+/// ======================================================================
+
+/// Finalized snapshot of a Solana account.
 #[derive(Clone)]
 pub struct SolanaAccount {
     blob: Arc<dyn BlobView>,
@@ -141,23 +128,20 @@ impl SolanaAccount {
         self.ticket
     }
 
-    /// TODO: Document the account header structure.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document header contents and layout
+    /// Fixed metadata for the account (pubkey, owner, lamports, slot).
     pub fn header(&self) -> &AccountHeader {
         let slice = self.blob.slice();
         let ah_len = std::mem::size_of::<AccountHeader>();
-        assert!(slice.len() <= ah_len);
+        assert!(
+            ah_len <= slice.len(),
+            "bad slice len: {} vs {}",
+            ah_len,
+            slice.len()
+        );
         bytes_to_struct(&slice[0..ah_len])
     }
 
-    /// TODO: Document when account data is present vs absent.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document None (no data) vs Some (account data bytes)
+    /// Raw account data, if present.
     pub fn data(&self) -> Option<&[u8]> {
         let slice = self.blob.slice();
         let ah_len = std::mem::size_of::<AccountHeader>();
@@ -168,11 +152,7 @@ impl SolanaAccount {
         }
     }
 
-    /// TODO: Document the edge structure and graph relationships.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document when edges exist and what they represent
+    /// Graph edges associated with this account.
     pub fn edge(&self) -> Option<&[AccountEdge]> {
         let blob = self.o_edge.as_ref()?;
         let slice = blob.slice();
@@ -190,42 +170,59 @@ impl std::fmt::Debug for SolanaAccount {
     }
 }
 
-/// This represents the globally monotonically increasing `u64`
-/// version number assigned to every account version.
-pub type Ticket = u64;
+/// ======================================================================
+/// ACCOUNT GRAPH MODEL
+/// ======================================================================
 
-/// Catscope assigns a 1 to 1 mapping of `u64` to `Pubkey`
-pub type AccountId = u64;
+/// This is weight on a graph edge.
+pub type Weight = u32;
+
+/// Depth is how far from subscription root account an account being traversed is.
+pub type Depth = u8;
+
+/// Directed relationship between two accounts.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Eq)]
+pub struct AccountEdge {
+    // source account
+    pub from: AccountId,
+
+    // destination account
+    pub to: AccountId,
+
+    // edge weight
+    pub weight: Weight,
+
+    // deprecated
+    pub slot: Slot,
+}
 
 /// This is the header for a Solana account.
-///
-/// # Layout
-///
-/// # Fields
-///
-/// * `pubkey` - this is the ecdsa 32B public key
-/// * `lamports` - Lamports in the account
-/// * `account_id` - this is the `u64` assigned to the `pubkey` by Catscope
-/// * `owner` - The program that owns this account. If executable, the program that loads this account.
-/// * `rent_epoch` - The epoch at which this account will next owe rent
-/// * `slot` - This is the slot at whicih the transaction was registered.
-/// * `data_size` - This is the size of the account data.
-/// * `executable` - This account's data contains a loaded program (and is now read-only)
 #[repr(C, align(8))]
 #[derive(Default, Copy, Debug, Clone, PartialEq, Eq)]
 pub struct AccountHeader {
-    /// account public key
+    /// account public key - (the ecdsa 32B public key)
     pub pubkey: Pubkey,
+
     /// lamports in the account
     pub lamports: u64,
-    /// account ID
+
+    /// account ID (the `u64` assigned to the `pubkey` by Catscope)
     pub account_id: AccountId,
+
     /// the program that owns this account. If executable, the program that loads this account.
     pub owner: Pubkey,
-    /// the epoch at which this account will next owe rent
+
+    ///  the epoch at which this account will next owe rent
     pub rent_epoch: u64,
+
+    // the slot at which the transaction was registered
     pub slot: u64,
+
+    // the size of the account data
     pub data_size: u32,
+
+    //  This account's data contains a loaded program (and is now read-only)
     pub executable: bool,
 }
 impl AccountHeader {
@@ -251,30 +248,6 @@ impl Ord for AccountHeader {
     }
 }
 
-/// This is weight on a graph edge.
-pub type Weight = u32;
-
-/// Depth is how far from subscription root account an account being traversed is.
-pub type Depth = u8;
-
-/// Graph edge between two accounts.
-///
-/// # Layout
-///
-/// ## Fields
-///
-/// * `from` - source account
-/// * `to` - destination account
-/// * `weight` - edge weight
-/// * `slot` - deprecated
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Eq)]
-pub struct AccountEdge {
-    pub from: AccountId,
-    pub to: AccountId,
-    pub weight: Weight,
-    pub slot: Slot,
-}
 impl PartialEq for AccountEdge {
     fn eq(&self, other: &Self) -> bool {
         self.from == other.from && self.to == other.to && self.weight == other.weight
@@ -302,6 +275,7 @@ impl Ord for AccountEdge {
         core::cmp::Ordering::Equal
     }
 }
+
 impl AccountEdge {
     pub fn account(&self) -> AccountId {
         if edge_is_outgoing(&self.weight) {
@@ -350,17 +324,11 @@ pub const MAX_WEIGHT: Weight = 1 << MAX_WEIGHT_ACCOUNT_EXPONENT;
 /// Load the latest finalized version of a Solana account.
 /// ```
 pub trait ViewAccount {
-    ///
-    /// # Returns
-    ///
     /// Returns a Solana account if it exists.
     fn load_account(&self, account_id: &AccountId) -> Option<SolanaAccount>;
 }
 
 /// Show a transaction result as recorded by the Geyser interface.
-///
-/// # Layout
-///
 #[repr(C, align(8))]
 pub struct TransactionResultHeader {
     /// The first signature in the transaction
@@ -372,61 +340,51 @@ pub struct TransactionResultHeader {
     pub success: bool,
 }
 
-/// TODO: Document the transaction result structure.
-///
-/// # Fields
-///
-/// * `transaction` - TODO: Document the transaction data
-/// * `slot` - TODO: Document the processing slot
-/// * `result` - TODO: Document success vs error result
+/// ======================================================================
+/// TRANSACTION RESULTS
+/// ======================================================================
+
 pub struct TransactionResult {
-    /// TODO: Document the transaction
+    /// Decoded transaction and instruction data
     pub transaction: CatscopeTransaction,
-    /// TODO: Document the slot
+
+    /// slot in which the transaction was processed
     pub slot: Slot,
-    /// TODO: Document the result
+
+    /// success or Solana runtime error
     pub result: Result<(), TransactionError>,
 }
 
-/// TODO: Document the Catscope transaction structure.
-///
-/// # Fields
-///
-/// * `signature` - TODO: Document the transaction signature
-/// * `index` - TODO: Document what the index represents
-/// * `outer` - TODO: Document outer instructions (max 30)
-/// * `inner` - TODO: Document inner instructions (max 30)
-///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::store::CatscopeTransaction;
-///
-/// fn process_tx(tx: &CatscopeTransaction) {
-///     // TODO: Add example of processing transaction
-///     // for instruction in tx.outer() {
-///     //     // Process outer instruction
-///     // }
-///     // for instruction in tx.inner() {
-///     //     // Process inner instruction
-///     // }
-/// }
-/// ```
+/// Zero-copy representation of a Solana transaction.
 #[repr(C, align(64))]
 pub struct CatscopeTransaction {
-    /// TODO: Document the transaction signature
+    /// Transaction signature
     pub signature: Signature,
-    /// TODO: Document the transaction index
+
+    /// Index assigned by the runtime.
     pub index: u64,
+
+    /// Number of outer instructions.
     outer_len: u16,
+    /// Top-level instructions.
     outer: [CatscopeInstruction; 30],
+
+    /// Number of inner-instruction groups.
     l1_inner_len: u8,
+    /// Per-outer-instruction inner instruction counts.
     l1_inner: [u8; 30],
+
+    /// Total number of inner instructions.
     inner_len: u16,
+    /// Flattened inner instruction list.
     inner: [CatscopeInstruction; 60],
+
+    /// Number of unique accounts touched.
     account_len: u16,
+    /// Sorted list of account IDs touched by this transaction.
     account: [AccountId; 256],
 }
+
 impl Default for CatscopeTransaction {
     fn default() -> Self {
         Self {
@@ -446,6 +404,7 @@ impl Default for CatscopeTransaction {
 
 const CAP: usize = 1024;
 impl CatscopeTransaction {
+    /// Reset all instructions and account tracking.
     pub fn clear(&mut self) {
         let mut n = self.outer.len();
         for i in 0..n {
@@ -513,10 +472,13 @@ impl CatscopeTransaction {
         self.account_len = size as _;
     }
 
+    /// Set the number of outer instructions and return a mutable slice.
     pub fn set_outer(&mut self, size: usize) -> &mut [CatscopeInstruction] {
         self.outer_len = size as u16;
         &mut self.outer[0..size]
     }
+
+    /// Append a group of inner instructions.
     pub fn append_inner(&mut self, size: usize) -> &mut [CatscopeInstruction] {
         let i = self.l1_inner_len as usize;
         let mut start = 0;
@@ -530,24 +492,18 @@ impl CatscopeTransaction {
         &mut self.inner[start..(start + size)]
     }
 
+    /// Accounts touched by this transaction.
     pub fn account(&self) -> &[AccountId] {
         &self.account[0..(self.account_len as usize)]
     }
 
-    /// TODO: Document outer instructions and their purpose.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document the slice of outer instructions
+    /// Return the top-level instructions of the transaction.
+    /// These are the instructions submitted by the client and define the execution flow.
     pub fn outer(&self) -> &[CatscopeInstruction] {
         &self.outer[0..(self.outer_len as usize)]
     }
 
-    /// TODO: Document inner instructions and their purpose.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document the slice of inner instructions
+    /// Return the inner (CPI-generated) instructions of the transaction.
     pub fn inner(&self) -> &[CatscopeInstruction] {
         &self.inner[0..(self.inner_len as usize)]
     }
@@ -570,27 +526,30 @@ impl std::fmt::Debug for CatscopeTransaction {
 ///
 /// * MAX_DATA: 2048 bytes
 /// * MAX_ACCOUNT: 256 accounts
+
+/// A single CatScope instrcution
 ///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::store::CatscopeInstruction;
-///
-/// fn process_instruction(instruction: &CatscopeInstruction) {
-///     // TODO: Add example
-///     // let program_id = instruction.program();
-///     // let data = instruction.data();
-///     // let accounts = instruction.account();
-/// }
-/// ```
+/// This is used to record what was executed during transaction processing,
+/// both for instructions explicitly submitted by the client and instructions
+/// invoked indirectly during execution.
 #[derive(Clone, Copy)]
 pub struct CatscopeInstruction {
+    /// AccountId of the program that executed this instruction.
     program: AccountId,
+
+    /// Length of the instruction data actually used.
     data_len: u16,
+
+    /// Raw instruction data payload (truncated to MAX_DATA).
     data: [u8; MAX_DATA],
+
+    /// Number of accounts referenced by this instruction.
     account_len: u16,
+
+    /// AccountIds touched by this instruction (ordered as executed).
     account: [AccountId; MAX_ACCOUNT],
 }
+
 impl Default for CatscopeInstruction {
     fn default() -> Self {
         Self {
@@ -603,16 +562,21 @@ impl Default for CatscopeInstruction {
     }
 }
 impl CatscopeInstruction {
+    /// Set the program that executed this instruction.
     #[inline]
     pub fn set_program(&mut self, program_id: AccountId) {
         self.program = program_id;
     }
+
+    /// Allocate space for `size` account references and return them for filling.
     #[inline]
     pub fn set_account(&mut self, size: usize) -> &mut [AccountId] {
         assert!(self.account.len() <= size);
         self.account_len = size as u16;
         &mut self.account[0..size]
     }
+
+    /// Copy raw instruction data into the fixed buffer.
     #[inline]
     pub fn set_data(&mut self, data: &[u8]) {
         assert!(data.len() <= self.data.len());
@@ -620,6 +584,8 @@ impl CatscopeInstruction {
         let subbuf = &mut self.data[0..data.len()];
         subbuf.copy_from_slice(data);
     }
+
+    /// Clear all fields so the instruction can be reused.
     #[inline]
     pub fn clear(&mut self) {
         self.program = 0;
@@ -634,30 +600,20 @@ impl CatscopeInstruction {
         self.account_len = 0;
     }
 
-    /// TODO: Document the program account.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document the program account ID
+    /// Returns the program that executed this instruction.
     #[inline]
     pub fn program(&self) -> AccountId {
         self.program
     }
 
-    /// TODO: Document the instruction data.
-    ///
-    /// # Returns
-    ///
+    /// Return the raw instruction data used during execution.
     /// TODO: Document the data slice (up to 2KB)
     #[inline]
     pub fn data(&self) -> &[u8] {
         &self.data[0..(self.data_len as usize)]
     }
 
-    /// TODO: Document the account list.
-    ///
-    /// # Returns
-    ///
+    /// Returns the accounts referenced by this instruction.
     /// TODO: Document the account ID slice (up to 256 accounts)
     #[inline]
     pub fn account(&self) -> &[AccountId] {
@@ -678,12 +634,28 @@ pub trait CatscopeTransactionResult: Send + Sync {
 const MAX_DATA: usize = 2 * 1024;
 const MAX_ACCOUNT: usize = 256;
 
-mod tests {
-    use crate::store::CatscopeTransaction;
-
-    #[test]
-    fn test_tx() {
-        let _tx = CatscopeTransaction::default();
-        assert_eq!(std::mem::size_of::<CatscopeTransaction>(), 0);
+pub fn convert_slot_status_from(status: SlotStatus) -> u8 {
+    match status {
+        SlotStatus::Processed => 1,
+        SlotStatus::Rooted => 2,
+        SlotStatus::Confirmed => 3,
+        SlotStatus::FirstShredReceived => 4,
+        SlotStatus::Completed => 5,
+        SlotStatus::CreatedBank => 6,
+        SlotStatus::Dead(_) => 7,
     }
+}
+
+pub fn convert_slot_status_to(statusu8: u8) -> Result<SlotStatus, CatscopeZerohopError> {
+    let x = match statusu8 {
+        1 => SlotStatus::Processed,
+        2 => SlotStatus::Rooted,
+        3 => SlotStatus::Confirmed,
+        4 => SlotStatus::FirstShredReceived,
+        5 => SlotStatus::Completed,
+        6 => SlotStatus::CreatedBank,
+        7 => SlotStatus::Dead(String::from("blank")),
+        _ => return Err(CatscopeZerohopError::OutofRange),
+    };
+    Ok(x)
 }

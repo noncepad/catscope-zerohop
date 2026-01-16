@@ -15,47 +15,32 @@ use crate::{
     },
 };
 
-/// TODO: Document the purpose of GraphClient and its role in the system.
+/// ======================================================================
+/// GRAPH CLIENT (ENTRY POINT)
+/// ======================================================================
+/// GraphClient defines the **streaming read interface** exposed to ZeroHop plugins.
 ///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::read::GraphClient;
-///
-/// struct MyGraphClient {
-///     // TODO: Add your fields
-/// }
-///
-/// impl GraphClient for MyGraphClient {
-///     fn connect(&self) -> Result<CatscopeReadChannelGroup, CatscopeZerohopError> {
-///         // TODO: Implement connection logic
-///     }
-///
-///     fn blockhash(&self) -> Option<Hash> {
-///         // TODO: Implement blockhash retrieval
-///     }
-///
-///     fn slot(&self) -> Result<flume::Receiver<SlotWithStatus>, CatscopeZerohopError> {
-///         // TODO: Implement slot stream
-///     }
-/// }
-/// ```
+/// Plugin lifecycle (read only):
+/// 1. Call `connect()` once to open a read session
+/// 2. Receive a channel group for this session
+/// 3. Create subscriptions and listen for events
 pub trait GraphClient: Send + Sync {
-    /// TODO: Document what connecting does and what the channel group is for.
+    /// Open a read session.
     ///
-    /// # Errors
-    ///
-    /// TODO: Document when this returns an error
+    /// Returns the channels the plugin will listen on.
+    /// If this fails, the plugin should treat it as fatal and stop.
     fn connect(&self) -> Result<Box<dyn CatscopeReadChannelGroup>, CatscopeZerohopError>;
 
-    /// TODO: Document when this returns None vs Some and what the blockhash is used for.
+    /// Returns the most recent blockhash known to the runtime.
+    ///
+    /// Exposed so plugins can stay in sync with the chain head
+    /// and align their logic with current block production.
     fn blockhash(&self) -> Option<Hash>;
 
-    /// TODO: Document the slot stream and what consumers should do with it.
+    /// Streams slot updates.
     ///
-    /// # Errors
-    ///
-    /// TODO: Document error conditions
+    /// Returns an error if slot updates cannot be provided.
+    /// Plugins should treat this as a loss of signal and assume pipeline is unhealthy
     fn slot(&self) -> Result<flume::Receiver<SlotWithStatus>, CatscopeZerohopError>;
     fn neighbor(
         &self,
@@ -65,130 +50,111 @@ pub trait GraphClient: Send + Sync {
     );
 }
 
+/// Direction of relationship traversal in the account graph.
 #[derive(Clone, Copy)]
 pub enum Direction {
     Incoming,
     Outgoing,
 }
-/// TODO: Document the purpose of this trait and the mapping system.
+
+/// ======================================================================
+///  ACCOUNT ID ↔ PUBKEY MAPPING
+/// ======================================================================
 ///
-/// Translate between AccountId and Pubkey.
+/// PubkeyMap provides a translation layer between Solana pubkeys
+/// and CatScope’s internal AccountId representation.
 ///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::read::PubkeyMap;
-/// use catscope_zerohop::store::AccountId;
-/// use solana_sdk::pubkey::Pubkey;
-///
-/// struct MyPubkeyMap {
-///     // TODO: Add your storage mechanism
-/// }
-///
-/// impl PubkeyMap for MyPubkeyMap {
-///     fn account_id_exists(&self, account_id: &AccountId) -> Option<Pubkey> {
-///         // TODO: Implement lookup
-///         None
-///     }
-///
-///     fn pubkey(&self, pubkey: &Pubkey) -> AccountId {
-///         // TODO: Implement mapping/creation
-///         0
-///     }
-/// }
-/// ```
+/// Internally, CatScope operates on compact AccountIds for faster graph
+/// trasnversal and scalability. Plugins use this trait to:
+/// - register accounts they care about (via pubkey → AccountId)
+/// - translate internal identifiers back to Solana pubkeys
 pub trait PubkeyMap: Send + Sync {
-    /// TODO: Document what it means if this returns Some vs None.
+    /// Translate an internal AccountId back into a Solana Pubkey.
     ///
-    /// # Returns
-    ///
-    /// TODO: Explain the return value meaning
+    /// Returns `Some(pubkey)` if the account is known to the runtime.
+    /// Returns `None` if the AccountId is unknown or no longer tracked.
     fn account_id(&self, account_id: &AccountId) -> Option<Pubkey>;
 
-    /// TODO: Document whether this creates a new mapping if it doesn't exist.
+    /// Translate a Solana Pubkey into an internal AccountId.
     ///
-    /// # Arguments
-    ///
-    /// * `pubkey` - TODO: Document the pubkey being looked up or created
+    /// If the pubkey is not yet known, this call may register it
+    /// for tracking and return a newly assigned AccountId.
     fn pubkey(&self, pubkey: &Pubkey) -> AccountId;
 }
 
-/// TODO: Document the purpose of viewing accounts and caching behavior.
+/// ======================================================================
+/// VIEWING ACCOUNT STATE
+/// ======================================================================
 ///
-/// # Example
-///
-/// ```ignore
-/// use catscope_zerohop::read::ViewAccount;
-/// use catscope_zerohop::store::{AccountId, SolanaAccount};
-///
-/// struct MyAccountView {
-///     // TODO: Add your storage
-/// }
-///
-/// impl ViewAccount for MyAccountView {
-///     fn get(&self, account_id: &AccountId) -> Option<SolanaAccount> {
-///         // TODO: Implement account retrieval
-///         None
-///     }
-/// }
-/// ```
+/// ViewAccount provides access to **finalized account state**.
 pub trait ViewAccount: Send + Sync {
-    /// TODO: Document what "finalized" means and when this returns None.
+    /// Returns the latest finalized snapshot of an account.
     ///
-    /// View the latest finalized version of an Account.
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document when None is returned vs Some
+    /// Returns `Some(account)` when a finalized version is available.
+    /// Returns `None` when the account is unknown or not yet finalized.
     fn get(&self, account_id: &AccountId) -> Option<SolanaAccount>;
 }
 
-/// TODO: Document what a subscription ID represents and its lifecycle
-pub type SubscriptionId = u32;
+/// ======================================================================
+/// CLIENTS AND SUBSCRIPTIONS
+/// ======================================================================
+///
+/// Each call to `connect()` creates a client.
+/// Each client can create multiple subscriptions.
+///
+/// A subscription defines:
+/// - where to start (root)
+/// - how far to expand (depth)
+/// - what signal to ignore (weight threshold)
 
-/// TODO: Document what a client ID represents and how clients are managed
+/// Identifier for a plugin read connection. Created on `connect()` and owns all subscriptions.
 pub type ClientId = u32;
 
-/// TODO: Document the client message protocol and when each variant is used.
-///
-/// # Variants
-///
-/// * `Disconnect` - TODO: Document disconnect behavior
-/// * `Subscribe` - TODO: Document subscription setup
-/// * `Cancel` - TODO: Document subscription cancellation
+/// Identifier for a single graph subscription. Lives under a client and is removed on cancel or disconnect.
+pub type SubscriptionId = u32;
+
+/// Internal control messages for managing read clients and subscriptions.
 pub enum ClientMessage {
+    /// Register a new read client.
     Connect(ClientId),
-    /// TODO: Document what happens when a client disconnects
+    /// Disconnect a client and remove all of its subscriptions.
     Disconnect(ClientId),
-    /// TODO: Document subscription parameters
+    /// Create a new subscription for a client.
     Subscribe(ClientId, SubscriptionId, SubscriptionDetail),
-    /// TODO: Document cancellation behavior
+    /// Cancel an existing subscription.
     Cancel(ClientId, SubscriptionId),
 }
 
-/// TODO: Document what a subscription detail configures.
-///
-/// # Fields
-///
-/// * `root` - TODO: Explain what the root account means
-/// * `filter_weight` - TODO: Explain the weight filtering system
-/// * `depth` - TODO: Explain depth limits
+/// Parameters for a graph subscription.
 pub struct SubscriptionDetail {
-    /// TODO: Document the root account selection
+    /// Account to start graph traversal from (root node = 1).
     pub root: AccountId,
-    /// TODO: Document how weight filtering works
+
+    /// Edge weight filter applied during traversal.
     pub filter_weight: Weight,
-    /// TODO: Document depth limits and traversal
+
+    /// How many edges deep the traversal may go.
     pub depth: Depth,
 }
 
+/// ======================================================================
+/// READ CHANNEL GROUP
+/// ======================================================================
+///
+/// Handle for a plugin’s active read session.
+///
+/// Used to create subscriptions and receive updates from the runtime.
 pub trait CatscopeReadChannelGroup: Send + Sync {
+    /// Identifier for this read client.
     fn id(&self) -> ClientId;
-    /// TODO: Document what events are received on this channel
+
+    /// Main even stream. Receives events from active subscriptions.
     fn event_rx(&self) -> flume::Receiver<Event>;
-    /// TODO: Document slot status updates
-    fn slot_status_rx(&self) -> flume::Receiver<SlotWithStatus>;
+
+    /// Request cancellation of a subscription.
     fn cancel(&self, subscription_id: SubscriptionId);
+
+    /// Request a new subscription.
     fn subscribe(
         &self,
         root_id: AccountId,
@@ -197,6 +163,10 @@ pub trait CatscopeReadChannelGroup: Send + Sync {
     ) -> Result<SubscriptionId, CatscopeZerohopError>;
 }
 
+// ======================================================================
+/// EVENTS
+/// ======================================================================
+///
 /// TODO: Document the event types received from subscriptions.
 ///
 /// # Variants
@@ -212,28 +182,20 @@ pub enum Event {
     TransactionResult(Arc<dyn CatscopeTransactionResult>),
 }
 
-/// TODO: Document the commit trait and iteration pattern.
+/// ======================================================================
+/// COMMITS
+/// ======================================================================
 ///
-/// # Example
+/// A batch of finalized account updates for a single slot.
 ///
-/// ```ignore
-/// use catscope_zerohop::read::Commit;
-///
-/// fn process_commit(commit: &dyn Commit) {
-///     // TODO: Add example of iterating through commit
-///     // while let Some(account) = commit.next() {
-///     //     // Process account
-///     // }
-/// }
-/// ```
+/// A Commit is delivered after the runtime determines which accounts
+/// changed in a slot. Plugins iterate through the accounts in the
+/// commit and update their internal state accordingly.
 pub trait Commit: Send + Sync {
-    /// TODO: Document which slot this commit is for
+    /// Slot in which these updates were finalized.
     fn slot(&self) -> Slot;
 
-    /// TODO: Document the iteration pattern and when this returns None
-    ///
-    /// # Returns
-    ///
-    /// TODO: Document what None means vs Some
+    /// Returns the next account that changed in this slot.
+    /// Returns `None` when all updates for the slot have been consumed.
     fn next(&mut self) -> Option<SolanaAccount>;
 }

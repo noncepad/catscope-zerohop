@@ -1,8 +1,8 @@
 use crate::store::CatscopeTransaction;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::mem::MaybeUninit;
 use std::cell::UnsafeCell;
+use std::mem::MaybeUninit;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Ring buffer size - MUST be power of 2 for fast modulo via bitwise AND
 /// At 100k tx/s, 8192 slots gives ~80ms of buffer (adjust as needed)
@@ -174,15 +174,6 @@ impl Consumer {
     /// Try to read the next transaction
     /// Returns None if no new transactions available
     ///
-    /// This spins on the current position - pair with your own spin loop:
-    /// ```
-    /// loop {
-    ///     match consumer.try_pop() {
-    ///         Some(tx) => process(tx),
-    ///         None => std::hint::spin_loop(),
-    ///     }
-    /// }
-    /// ```
     #[inline]
     pub fn try_pop(&mut self) -> Option<&CatscopeTransaction> {
         let write_pos = self.ring.write_cursor.load(Ordering::Acquire);
