@@ -1,10 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    hash::BuildHasherDefault,
     sync::{Arc, atomic::AtomicU32},
-};
-
-use solana_sdk::{
-    clock::Slot, hash::Hash, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
 };
 
 use crate::{
@@ -14,6 +11,10 @@ use crate::{
         SolanaAccount, TransactionResult, Weight,
     },
 };
+use solana_sdk::{
+    clock::Slot, hash::Hash, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
+};
+use twox_hash::XxHash64;
 
 /// ======================================================================
 /// GRAPH CLIENT (ENTRY POINT)
@@ -30,6 +31,8 @@ pub trait GraphClient: Send + Sync {
     /// Returns the channels the plugin will listen on.
     /// If this fails, the plugin should treat it as fatal and stop.
     fn connect(&self) -> Result<Box<dyn CatscopeReadChannelGroup>, CatscopeZerohopError>;
+
+    fn poller(&self) -> Box<dyn CatscopeBuffer>;
 
     /// Returns the most recent blockhash known to the runtime.
     ///
@@ -138,6 +141,22 @@ pub struct SubscriptionDetail {
 }
 
 /// ======================================================================
+/// Account and Transaction Buffer
+/// ======================================================================
+///
+/// Poll the buffer to see if there are any updates.
+///
+/// Used to create subscriptions and receive updates from the runtime.
+pub trait CatscopeBuffer: Send + Sync {
+    /// poll returns references to non-finalized accounts and transactions.
+    fn poll<'a, 'b: 'a>(
+        &'b mut self,
+        hs_account_id: &'b HashSet<AccountId, BuildHasherDefault<XxHash64>>,
+        hs_signature: &'b HashSet<Signature, BuildHasherDefault<XxHash64>>,
+    ) -> Option<StateWindow<'a>>;
+}
+
+/// ======================================================================
 /// READ CHANNEL GROUP
 /// ======================================================================
 ///
@@ -178,8 +197,6 @@ pub enum Event {
     Ack(SubscriptionId),
     /// TODO: Document commit data structure
     Commit(Box<dyn Commit>),
-    /// Transaction resutl
-    TransactionResult(Arc<dyn CatscopeTransactionResult>),
 }
 
 /// ======================================================================
@@ -198,4 +215,22 @@ pub trait Commit: Send + Sync {
     /// Returns the next account that changed in this slot.
     /// Returns `None` when all updates for the slot have been consumed.
     fn next(&mut self) -> Option<SolanaAccount>;
+}
+
+pub struct StateWindow<'a> {
+    pub hs_intersect: &'a HashSet<AccountId, BuildHasherDefault<XxHash64>>,
+    pub m_tx:
+        &'a HashMap<Signature, Arc<dyn CatscopeTransactionResult>, BuildHasherDefault<XxHash64>>,
+    pub l_account: &'a Vec<SolanaAccount>,
+    pub l_tx: &'a Vec<Signature>,
+}
+
+impl<'a> std::fmt::Debug for StateWindow<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateWindow")
+            .field("hs_intersect", &self.hs_intersect)
+            .field("l_account", &self.l_account)
+            .field("l_tx", &self.l_tx)
+            .finish()
+    }
 }

@@ -182,7 +182,7 @@ pub type Depth = u8;
 
 /// Directed relationship between two accounts.
 #[repr(C, align(8))]
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Default, Clone, Eq)]
 pub struct AccountEdge {
     // source account
     pub from: AccountId,
@@ -195,6 +195,59 @@ pub struct AccountEdge {
 
     // deprecated
     pub slot: Slot,
+}
+
+impl PartialEq for AccountEdge {
+    fn eq(&self, other: &Self) -> bool {
+        self.from == other.from && self.to == other.to && self.weight == other.weight
+    }
+}
+
+impl PartialOrd for AccountEdge {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.from.partial_cmp(&other.from) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => {
+                if ord.is_some() {
+                    return ord;
+                }
+            }
+        }
+        match self.to.partial_cmp(&other.to) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => {
+                if ord.is_some() {
+                    return ord;
+                }
+            }
+        }
+        let ord = self.weight.partial_cmp(&other.weight);
+        if ord.is_some() {
+            return ord;
+        } else {
+            return Some(std::cmp::Ordering::Equal);
+        }
+    }
+}
+impl Ord for AccountEdge {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.from.cmp(&other.from) {
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+            std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+        };
+        match self.to.cmp(&other.to) {
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+            std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+        };
+        match self.weight.cmp(&other.weight) {
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+            std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+        };
+        std::cmp::Ordering::Equal
+    }
 }
 
 /// This is the header for a Solana account.
@@ -245,34 +298,6 @@ impl PartialOrd for AccountHeader {
 impl Ord for AccountHeader {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.slot.cmp(&other.slot)
-    }
-}
-
-impl PartialEq for AccountEdge {
-    fn eq(&self, other: &Self) -> bool {
-        self.from == other.from && self.to == other.to && self.weight == other.weight
-    }
-}
-impl PartialOrd for AccountEdge {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for AccountEdge {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.from.cmp(&other.from) {
-            core::cmp::Ordering::Equal => {}
-            ord => return ord,
-        }
-        match self.to.cmp(&other.to) {
-            core::cmp::Ordering::Equal => {}
-            ord => return ord,
-        }
-        match self.weight.cmp(&other.weight) {
-            core::cmp::Ordering::Equal => {}
-            ord => return ord,
-        }
-        core::cmp::Ordering::Equal
     }
 }
 
@@ -510,7 +535,15 @@ impl CatscopeTransaction {
 }
 impl std::fmt::Debug for CatscopeTransaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CatscopeTransaction").finish()
+        f.debug_struct("CatscopeTransaction")
+            .field("signature", &self.signature)
+            .field("index", &self.index)
+            .field("outer_len", &self.outer_len)
+            .field("l1_inner_len", &self.l1_inner_len)
+            .field("inner_len", &self.inner_len)
+            .field("account_len", &self.account_len)
+            .field("account", &self.account)
+            .finish()
     }
 }
 
@@ -571,7 +604,13 @@ impl CatscopeInstruction {
     /// Allocate space for `size` account references and return them for filling.
     #[inline]
     pub fn set_account(&mut self, size: usize) -> &mut [AccountId] {
-        assert!(self.account.len() <= size);
+        assert!(
+            size < self.account.len(),
+            "bad account length_: {} {} {}",
+            self.account_len,
+            self.account.len(),
+            size
+        );
         self.account_len = size as u16;
         &mut self.account[0..size]
     }
@@ -579,7 +618,12 @@ impl CatscopeInstruction {
     /// Copy raw instruction data into the fixed buffer.
     #[inline]
     pub fn set_data(&mut self, data: &[u8]) {
-        assert!(data.len() <= self.data.len());
+        assert!(
+            data.len() <= self.data.len(),
+            "bad data: {} {}",
+            data.len(),
+            self.data.len()
+        );
         self.data_len = data.len() as u16;
         let subbuf = &mut self.data[0..data.len()];
         subbuf.copy_from_slice(data);
@@ -629,6 +673,7 @@ impl std::fmt::Debug for CatscopeInstruction {
 pub trait CatscopeTransactionResult: Send + Sync {
     fn result(&self) -> Result<Slot, TransactionError>;
     fn tx(&self) -> &CatscopeTransaction;
+    fn slot(&self) -> Slot;
 }
 
 const MAX_DATA: usize = 2 * 1024;

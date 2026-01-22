@@ -34,7 +34,7 @@ pub struct SampleResult {
 #[derive(Debug, Clone, Copy, ZeroCopySend)]
 #[repr(C)]
 pub struct JobResult<S: Clone + Copy + ZeroCopySend> {
-    r: Result<S, TxFwdErrorCode>,
+    pub r: Result<S, TxFwdErrorCode>,
 }
 
 pub trait RequestHandler<T: Sized, S: Sized> {
