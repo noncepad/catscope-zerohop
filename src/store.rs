@@ -1,3 +1,9 @@
+use agave_geyser_plugin_interface::geyser_plugin_interface::SlotStatus;
+use solana_sdk::signature::SIGNATURE_BYTES;
+use solana_sdk::{
+    clock::Slot, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
+};
+use std::alloc::{Layout, alloc, alloc_zeroed};
 /// Core data structures shared between the CatScope runtime and plugins.
 use std::{
     collections::HashSet,
@@ -5,11 +11,7 @@ use std::{
     mem::MaybeUninit,
     sync::{Arc, atomic::AtomicBool},
 };
-
-use agave_geyser_plugin_interface::geyser_plugin_interface::SlotStatus;
-use solana_sdk::{
-    clock::Slot, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
-};
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::{err::CatscopeZerohopError, util::bytes_to_struct};
 
@@ -182,7 +184,7 @@ pub type Depth = u8;
 
 /// Directed relationship between two accounts.
 #[repr(C, align(8))]
-#[derive(Debug, Default, Clone, Eq)]
+#[derive(Debug, Default, Clone, Copy, Eq)]
 pub struct AccountEdge {
     // source account
     pub from: AccountId,
@@ -346,13 +348,6 @@ pub const WEIGHT_SYMLINK: Weight = 1 << 8;
 pub const MAX_WEIGHT_ACCOUNT_EXPONENT: u8 = 9;
 pub const MAX_WEIGHT: Weight = 1 << MAX_WEIGHT_ACCOUNT_EXPONENT;
 
-/// Load the latest finalized version of a Solana account.
-/// ```
-pub trait ViewAccount {
-    /// Returns a Solana account if it exists.
-    fn load_account(&self, account_id: &AccountId) -> Option<SolanaAccount>;
-}
-
 /// Show a transaction result as recorded by the Geyser interface.
 #[repr(C, align(8))]
 pub struct TransactionResultHeader {
@@ -381,156 +376,118 @@ pub struct TransactionResult {
 }
 
 /// Zero-copy representation of a Solana transaction.
+#[derive(SchemaWrite, SchemaRead)]
 #[repr(C, align(64))]
 pub struct CatscopeTransaction {
     /// Transaction signature
-    pub signature: Signature,
+    pub signature: [u8; SIGNATURE_BYTES],
 
     /// Index assigned by the runtime.
     pub index: u64,
 
-    /// Number of outer instructions.
-    outer_len: u16,
+    data_chunk_last: Vec<u16>,
+    data_chunk: Vec<u8>,
+
+    account_chunk_last: Vec<u16>,
+    account_chunk: Vec<AccountId>,
+
     /// Top-level instructions.
-    outer: [CatscopeInstruction; 30],
+    outer: Vec<CatscopeInstruction>,
 
-    /// Number of inner-instruction groups.
-    l1_inner_len: u8,
     /// Per-outer-instruction inner instruction counts.
-    l1_inner: [u8; 30],
+    l1_inner: Vec<u8>,
 
-    /// Total number of inner instructions.
-    inner_len: u16,
     /// Flattened inner instruction list.
-    inner: [CatscopeInstruction; 60],
+    inner: Vec<CatscopeInstruction>,
 
-    /// Number of unique accounts touched.
-    account_len: u16,
     /// Sorted list of account IDs touched by this transaction.
-    account: [AccountId; 256],
+    account: Vec<AccountId>,
 }
+pub struct CatscopeTransactionReadWrapper<'a> {
+    tx: &'a CatscopeTransaction,
+}
+impl<'a> TryFrom<&[u8]> for CatscopeTransactionReadWrapper<'a> {
+    type Error = CatscopeZerohopError;
 
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
+        todo!()
+    }
+}
 impl Default for CatscopeTransaction {
     fn default() -> Self {
         Self {
-            signature: Default::default(),
-            index: Default::default(),
-            outer_len: Default::default(),
-            outer: Default::default(),
-            l1_inner_len: Default::default(),
-            l1_inner: Default::default(),
-            inner_len: Default::default(),
-            inner: [CatscopeInstruction::default(); 60],
-            account_len: 0,
-            account: [0; 256],
+            signature: [0u8; SIGNATURE_BYTES],
+            index: 0,
+            outer: Vec::with_capacity(2),
+            l1_inner: Vec::with_capacity(6),
+            inner: Vec::with_capacity(2),
+            account: Vec::with_capacity(6),
+            account_chunk_last: Vec::with_capacity(6),
+            account_chunk: Vec::with_capacity(6),
+            data_chunk_last: Vec::with_capacity(6),
+            data_chunk: Vec::with_capacity(6),
         }
     }
 }
 
+const OUTER_MAX: usize = 512;
+const INNER_MAX: usize = 512;
+const ACCOUNT_MAX: usize = 512;
+const DATA_MAX: usize = 4 * 1024;
+
 const CAP: usize = 1024;
 impl CatscopeTransaction {
-    /// Reset all instructions and account tracking.
-    pub fn clear(&mut self) {
-        let mut n = self.outer.len();
-        for i in 0..n {
-            self.outer[i].clear();
-        }
-        self.outer_len = 0;
-        n = self.inner.len();
-        for i in 0..n {
-            self.inner[i].clear();
-        }
-        self.inner_len = 0;
-        n = self.account.len();
-        for i in 0..n {
-            self.account[i] = 0;
-        }
-        self.account_len = 0;
-    }
-
-    /// Take accounts touched by this transaction.
-    /// TODO: improve the efficiency
-    pub fn set_account(&mut self) {
-        let mut size = 0;
-        for i in 0..self.outer_len {
-            let outer = &self.outer[i as usize];
-            for j in 0..outer.account_len {
-                let account = outer.account[j as usize];
-                let old_size = size;
-                if size == 0 {
-                    self.account[size] = account;
-                    size += 1;
-                } else if account < self.account[0] {
-                    // prepend
-                    size += 1;
-                    let array = &mut self.account[0..size];
-                    array.copy_within(0..old_size, 1);
-                    array[0] = account;
-                } else if self.account[size] < account {
-                    // append
-                    size += 1;
-                    let array = &mut self.account[0..size];
-                    array[old_size] = account;
-                } else {
-                    match &self.account[0..size].binary_search(&account) {
-                        Ok(_) => {
-                            // there is a duplicate
-                        }
-                        Err(pos) => {
-                            // internal insert
-                            let old_size = size;
-                            size += 1;
-                            let array = &mut self.account[0..size];
-                            assert!(
-                                *pos < array.len(),
-                                "out of range: {} vs {}",
-                                *pos,
-                                array.len()
-                            );
-                            array.copy_within(*pos..old_size, *pos + 1);
-                            array[*pos] = account;
-                        }
-                    };
-                }
-            }
-        }
-        self.account_len = size as _;
-    }
-
     /// Set the number of outer instructions and return a mutable slice.
-    pub fn set_outer(&mut self, size: usize) -> &mut [CatscopeInstruction] {
-        self.outer_len = size as u16;
-        &mut self.outer[0..size]
+    pub fn append_outer<'a, 'b: 'a>(&'b mut self) -> CatscopeInstructionWrite<'a> {
+        let i = IxIndex::Outer(self.outer.len());
+        self.outer.push(CatscopeInstruction::default());
+        let account_chunk_i = self.account_chunk_last.len();
+        self.account_chunk_last.push(0);
+        let data_chunk_i = self.data_chunk_last.len();
+        self.data_chunk_last.push(0);
+        CatscopeInstructionWrite {
+            i,
+            account_chunk_i,
+            data_chunk_i,
+            account_set: false,
+            data_set: false,
+            tx: self,
+        }
     }
 
     /// Append a group of inner instructions.
-    pub fn append_inner(&mut self, size: usize) -> &mut [CatscopeInstruction] {
-        let i = self.l1_inner_len as usize;
-        let mut start = 0;
-        for k in 0..i {
-            start += self.l1_inner[k] as usize;
+    pub fn append_inner<'a, 'b: 'a>(&'b mut self) -> CatscopeInstructionWrite<'a> {
+        let i = IxIndex::Inner(self.inner.len());
+        self.inner.push(CatscopeInstruction::default());
+        let account_chunk_i = self.account_chunk_last.len();
+        self.account_chunk_last.push(0);
+        let data_chunk_i = self.data_chunk_last.len();
+        self.data_chunk_last.push(0);
+
+        CatscopeInstructionWrite {
+            i,
+            account_chunk_i,
+            data_chunk_i,
+            account_set: false,
+            data_set: false,
+            tx: self,
         }
-        assert!(size <= u8::MAX as usize);
-        self.l1_inner[i] = size as u8;
-        self.l1_inner_len += 1;
-        self.inner_len = size as u16;
-        &mut self.inner[start..(start + size)]
     }
 
     /// Accounts touched by this transaction.
     pub fn account(&self) -> &[AccountId] {
-        &self.account[0..(self.account_len as usize)]
+        &self.account
     }
 
     /// Return the top-level instructions of the transaction.
     /// These are the instructions submitted by the client and define the execution flow.
-    pub fn outer(&self) -> &[CatscopeInstruction] {
-        &self.outer[0..(self.outer_len as usize)]
+    pub fn outer<'a, 'b: 'a>(&'b self) -> CatscopeInstructionReadOuterIterator<'a> {
+        CatscopeInstructionReadOuterIterator { i: 0, tx: self }
     }
 
     /// Return the inner (CPI-generated) instructions of the transaction.
-    pub fn inner(&self) -> &[CatscopeInstruction] {
-        &self.inner[0..(self.inner_len as usize)]
+    pub fn inner<'a, 'b: 'a>(&'b self) -> CatscopeInstructionReadInnerIterator<'a> {
+        CatscopeInstructionReadInnerIterator { i: 0, tx: self }
     }
 }
 impl std::fmt::Debug for CatscopeTransaction {
@@ -538,12 +495,51 @@ impl std::fmt::Debug for CatscopeTransaction {
         f.debug_struct("CatscopeTransaction")
             .field("signature", &self.signature)
             .field("index", &self.index)
-            .field("outer_len", &self.outer_len)
-            .field("l1_inner_len", &self.l1_inner_len)
-            .field("inner_len", &self.inner_len)
-            .field("account_len", &self.account_len)
             .field("account", &self.account)
             .finish()
+    }
+}
+pub struct CatscopeInstructionReadInnerIterator<'a> {
+    i: usize,
+    tx: &'a CatscopeTransaction,
+}
+
+impl<'a> Iterator for CatscopeInstructionReadInnerIterator<'a> {
+    type Item = CatscopeInstructionRead<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.tx.inner.len() <= self.i {
+            None
+        } else {
+            let r = CatscopeInstructionRead {
+                i: IxIndex::Inner(self.i),
+                tx: self.tx,
+            };
+            self.i += 1;
+            Some(r)
+        }
+    }
+}
+
+pub struct CatscopeInstructionReadOuterIterator<'a> {
+    i: usize,
+    tx: &'a CatscopeTransaction,
+}
+
+impl<'a> Iterator for CatscopeInstructionReadOuterIterator<'a> {
+    type Item = CatscopeInstructionRead<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.tx.outer.len() <= self.i {
+            None
+        } else {
+            let r = CatscopeInstructionRead {
+                i: IxIndex::Outer(self.i),
+                tx: self.tx,
+            };
+            self.i += 1;
+            Some(r)
+        }
     }
 }
 
@@ -558,112 +554,159 @@ impl std::fmt::Debug for CatscopeTransaction {
 /// # Limits
 ///
 /// * MAX_DATA: 2048 bytes
-/// * MAX_ACCOUNT: 256 accounts
+/// * ACCOUNT_MAX: 256 accounts
 
 /// A single CatScope instrcution
 ///
 /// This is used to record what was executed during transaction processing,
 /// both for instructions explicitly submitted by the client and instructions
 /// invoked indirectly during execution.
-#[derive(Clone, Copy)]
-pub struct CatscopeInstruction {
+#[derive(Clone, Copy, Default, SchemaWrite, SchemaRead)]
+#[repr(C, align(8))]
+struct CatscopeInstruction {
     /// AccountId of the program that executed this instruction.
     program: AccountId,
-
-    /// Length of the instruction data actually used.
-    data_len: u16,
-
-    /// Raw instruction data payload (truncated to MAX_DATA).
-    data: [u8; MAX_DATA],
-
-    /// Number of accounts referenced by this instruction.
-    account_len: u16,
-
-    /// AccountIds touched by this instruction (ordered as executed).
-    account: [AccountId; MAX_ACCOUNT],
+    data_chunk_i: u16,
+    account_chunk_i: u16,
 }
 
-impl Default for CatscopeInstruction {
-    fn default() -> Self {
-        Self {
-            program: Default::default(),
-            data_len: Default::default(),
-            data: [0u8; MAX_DATA],
-            account_len: Default::default(),
-            account: [0; MAX_ACCOUNT],
+pub struct CatscopeInstructionRead<'a> {
+    i: IxIndex,
+    tx: &'a CatscopeTransaction,
+}
+
+impl<'a> CatscopeInstructionRead<'a> {
+    /// Returns the program that executed this instruction.
+    #[inline]
+    pub fn program(&self) -> &AccountId {
+        match self.i {
+            IxIndex::Outer(i) => &self.tx.outer[i].program,
+            IxIndex::Inner(i) => &self.tx.inner[i].program,
         }
     }
+
+    /// Return the raw instruction data used during execution.
+    pub fn data(&self) -> &[u8] {
+        let ix = match self.i {
+            IxIndex::Outer(i) => &self.tx.outer[i],
+            IxIndex::Inner(i) => &self.tx.inner[i],
+        };
+        let chunk_i = ix.data_chunk_i as usize;
+        let (start, finish) = if chunk_i == 0 {
+            (0, self.tx.data_chunk_last[chunk_i])
+        } else {
+            (
+                self.tx.data_chunk_last[chunk_i - 1],
+                self.tx.data_chunk_last[chunk_i],
+            )
+        };
+        &self.tx.data_chunk[(start as usize)..(finish as usize)]
+    }
+
+    /// Returns the accounts referenced by this instruction.
+    pub fn account(&self) -> &[AccountId] {
+        let ix = match self.i {
+            IxIndex::Outer(i) => &self.tx.outer[i],
+            IxIndex::Inner(i) => &self.tx.inner[i],
+        };
+        let chunk_i = ix.account_chunk_i as usize;
+        let (start, finish) = if chunk_i == 0 {
+            (0, self.tx.account_chunk_last[chunk_i])
+        } else {
+            (
+                self.tx.account_chunk_last[chunk_i - 1],
+                self.tx.account_chunk_last[chunk_i],
+            )
+        };
+        &self.tx.account_chunk[(start as usize)..(finish as usize)]
+    }
 }
-impl CatscopeInstruction {
+
+enum IxIndex {
+    Outer(usize),
+    Inner(usize),
+}
+
+pub struct CatscopeInstructionWrite<'a> {
+    i: IxIndex,
+    data_chunk_i: usize,
+    account_chunk_i: usize,
+    account_set: bool,
+    data_set: bool,
+    tx: &'a mut CatscopeTransaction,
+}
+impl<'a> CatscopeInstructionWrite<'a> {
     /// Set the program that executed this instruction.
     #[inline]
-    pub fn set_program(&mut self, program_id: AccountId) {
-        self.program = program_id;
+    pub fn program(&mut self, program_id: AccountId) {
+        match self.i {
+            IxIndex::Outer(i) => {
+                self.tx.outer[i].program = program_id;
+            }
+            IxIndex::Inner(i) => {
+                self.tx.inner[i].program = program_id;
+            }
+        };
     }
 
     /// Allocate space for `size` account references and return them for filling.
     #[inline]
-    pub fn set_account(&mut self, size: usize) -> &mut [AccountId] {
-        assert!(
-            size < self.account.len(),
-            "bad account length_: {} {} {}",
-            self.account_len,
-            self.account.len(),
-            size
-        );
-        self.account_len = size as u16;
-        &mut self.account[0..size]
+    pub fn account(&mut self, size: usize) -> &mut [AccountId] {
+        assert!(!self.account_set);
+        self.account_set = true;
+        let start = self.tx.account_chunk.len();
+        let finish = start + size;
+        self.tx
+            .account_chunk
+            .resize(self.tx.account_chunk.len() + size, 0);
+        self.tx.account_chunk_last[self.account_chunk_i] = finish as u16;
+        &mut self.tx.account_chunk[start..finish]
     }
 
-    /// Copy raw instruction data into the fixed buffer.
+    /// Allocate space for `size` account references and return them for filling.
     #[inline]
-    pub fn set_data(&mut self, data: &[u8]) {
-        assert!(
-            data.len() <= self.data.len(),
-            "bad data: {} {}",
-            data.len(),
-            self.data.len()
-        );
-        self.data_len = data.len() as u16;
-        let subbuf = &mut self.data[0..data.len()];
-        subbuf.copy_from_slice(data);
-    }
-
-    /// Clear all fields so the instruction can be reused.
-    #[inline]
-    pub fn clear(&mut self) {
-        self.program = 0;
-        let buf = &mut self.data[0..];
-        unsafe {
-            std::ptr::write_bytes(buf.as_mut_ptr(), 0, self.data_len as usize);
-        }
-        self.data_len = 0;
-        for i in 0..self.account_len {
-            self.account[i as usize] = 0;
-        }
-        self.account_len = 0;
-    }
-
-    /// Returns the program that executed this instruction.
-    #[inline]
-    pub fn program(&self) -> AccountId {
-        self.program
-    }
-
-    /// Return the raw instruction data used during execution.
-    /// TODO: Document the data slice (up to 2KB)
-    #[inline]
-    pub fn data(&self) -> &[u8] {
-        &self.data[0..(self.data_len as usize)]
-    }
-
-    /// Returns the accounts referenced by this instruction.
-    /// TODO: Document the account ID slice (up to 256 accounts)
-    #[inline]
-    pub fn account(&self) -> &[AccountId] {
-        &self.account[0..(self.account_len as usize)]
+    pub fn data(&mut self, size: usize) -> &mut [u8] {
+        assert!(!self.data_set);
+        self.data_set = true;
+        let start = self.tx.data_chunk.len();
+        let finish = start + size;
+        self.tx
+            .data_chunk
+            .resize(self.tx.data_chunk.len() + size, 0);
+        self.tx.data_chunk_last[self.data_chunk_i] = finish as u16;
+        &mut self.tx.data_chunk[start..finish]
     }
 }
+impl<'a> Drop for CatscopeInstructionWrite<'a> {
+    fn drop(&mut self) {
+        assert!(self.account_set);
+        assert!(self.data_set);
+        let ix = match self.i {
+            IxIndex::Outer(i) => &mut self.tx.outer[i],
+            IxIndex::Inner(i) => &mut self.tx.inner[i],
+        };
+        let chunk_i = ix.account_chunk_i as usize;
+        let (start, finish) = if chunk_i == 0 {
+            (0, self.tx.account_chunk_last[chunk_i])
+        } else {
+            (
+                self.tx.account_chunk_last[chunk_i - 1],
+                self.tx.account_chunk_last[chunk_i],
+            )
+        };
+        assert!((start == 0 && finish == 0) || 0 < finish);
+        for i in (start as usize)..(finish as usize) {
+            let account_id = self.tx.account_chunk[i];
+            match self.tx.account.binary_search(&account_id) {
+                Ok(_) => {
+                    // duplicate
+                }
+                Err(i) => self.tx.account.insert(i, account_id),
+            };
+        }
+    }
+}
+
 impl std::fmt::Debug for CatscopeInstruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CatscopeInstructionFull").finish()
@@ -675,9 +718,6 @@ pub trait CatscopeTransactionResult: Send + Sync {
     fn tx(&self) -> &CatscopeTransaction;
     fn slot(&self) -> Slot;
 }
-
-const MAX_DATA: usize = 2 * 1024;
-const MAX_ACCOUNT: usize = 256;
 
 pub fn convert_slot_status_from(status: SlotStatus) -> u8 {
     match status {
@@ -703,4 +743,62 @@ pub fn convert_slot_status_to(statusu8: u8) -> Result<SlotStatus, CatscopeZeroho
         _ => return Err(CatscopeZerohopError::OutofRange),
     };
     Ok(x)
+}
+
+mod tests {
+    use solana_sdk::pubkey::Pubkey;
+
+    use crate::store::{AccountId, CatscopeTransaction};
+
+    #[test]
+    fn test_append() {
+        let program_id = 2183483;
+        let check_l_account_id: [AccountId; 2] = [32, 85];
+        let ix_data: [u8; 4] = [0, 1, 13, 0];
+        let mut catx = CatscopeTransaction::default();
+        {
+            let mut outer = catx.append_outer();
+            outer.program(program_id);
+            let l_a = outer.account(2);
+            l_a.copy_from_slice(&check_l_account_id);
+            let d = outer.data(ix_data.len());
+            d.copy_from_slice(&ix_data);
+        }
+        {
+            for ix in catx.outer() {
+                assert_eq!(*ix.program(), program_id);
+                let l_a_id = ix.account();
+                assert_eq!(l_a_id.len(), check_l_account_id.len());
+                for j in 0..check_l_account_id.len() {
+                    assert_eq!(l_a_id[j], check_l_account_id[j], "bad j {j}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_append_inner() {
+        let program_id = 2183483;
+        let check_l_account_id: [AccountId; 2] = [32, 85];
+        let ix_data: [u8; 4] = [0, 1, 13, 0];
+        let mut catx = CatscopeTransaction::default();
+        {
+            let mut inner = catx.append_inner();
+            inner.program(program_id);
+            let l_a = inner.account(2);
+            l_a.copy_from_slice(&check_l_account_id);
+            let d = inner.data(ix_data.len());
+            d.copy_from_slice(&ix_data);
+        }
+        {
+            for ix in catx.inner() {
+                assert_eq!(*ix.program(), program_id);
+                let l_a_id = ix.account();
+                assert_eq!(l_a_id.len(), check_l_account_id.len());
+                for j in 0..check_l_account_id.len() {
+                    assert_eq!(l_a_id[j], check_l_account_id[j], "bad j {j}");
+                }
+            }
+        }
+    }
 }

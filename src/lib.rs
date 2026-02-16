@@ -15,5 +15,5 @@ pub mod quic;
 pub mod read;
 pub mod store;
 pub mod txfwd;
-pub(crate) mod util;
+pub mod util;
 pub mod write;

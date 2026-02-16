@@ -49,7 +49,7 @@ pub trait GraphClient: Send + Sync {
         &self,
         account_id: AccountId,
         direction: Direction,
-        list: &mut HashMap<AccountId, Weight>,
+        m_peer: &mut HashMap<AccountId, Weight, BuildHasherDefault<XxHash64>>,
     );
 }
 
@@ -83,19 +83,6 @@ pub trait PubkeyMap: Send + Sync {
     /// If the pubkey is not yet known, this call may register it
     /// for tracking and return a newly assigned AccountId.
     fn pubkey(&self, pubkey: &Pubkey) -> AccountId;
-}
-
-/// ======================================================================
-/// VIEWING ACCOUNT STATE
-/// ======================================================================
-///
-/// ViewAccount provides access to **finalized account state**.
-pub trait ViewAccount: Send + Sync {
-    /// Returns the latest finalized snapshot of an account.
-    ///
-    /// Returns `Some(account)` when a finalized version is available.
-    /// Returns `None` when the account is unknown or not yet finalized.
-    fn get(&self, account_id: &AccountId) -> Option<SolanaAccount>;
 }
 
 /// ======================================================================
@@ -197,6 +184,8 @@ pub enum Event {
     Ack(SubscriptionId),
     /// TODO: Document commit data structure
     Commit(Box<dyn Commit>),
+    //Transaction(Box<dyn CatscopeTransactionResult>),
+    //Account(SolanaAccount),
 }
 
 /// ======================================================================

@@ -4,7 +4,7 @@ use env_logger::Env;
 
 use crate::{
     err::CatscopeZerohopError,
-    read::{GraphClient, PubkeyMap, ViewAccount},
+    read::{GraphClient, PubkeyMap},
     write::{Scheduler, TransactionProcessor},
 };
 
@@ -54,7 +54,7 @@ pub trait ZerohopInterface: Send + Sync {
 /// - account state
 /// - graph relationships
 /// - pubkey ↔ account-id mappings
-pub trait CatscopeReader: GraphClient + PubkeyMap + ViewAccount {}
+pub trait CatscopeReader: GraphClient + PubkeyMap {}
 
 /// ======================================================================
 /// WRITER INTERFACE

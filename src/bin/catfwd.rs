@@ -4,11 +4,12 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use catscope_zerohop::{
     plugin::init_logger,
-    quic::{QuicRequestHandler, SolanaQuicClient},
+    quic::{QuicClientConfig, QuicRequestHandler, SolanaQuicClient},
     txfwd::server,
 };
 use log::error;
@@ -36,12 +37,29 @@ fn main() {
         shutdown_signal.store(true, Ordering::Relaxed);
     });
 
-    let rpc_client = RpcClient::new(std::env::var("RPC_URL").expect("need RPC_URL"));
+    let rpc_url = std::env::var("RPC_URL").expect("need RPC_URL");
+    let rpc_client = RpcClient::new(rpc_url.clone());
     let keypair = Keypair::read_from_file(std::env::var("KEYPAIR").expect("need KEYPAIR")).unwrap();
-    let quic_client =
-        SolanaQuicClient::new(keypair, None).expect("quic client configuration failed");
-    let handler =
-        QuicRequestHandler::new(rpc_client, quic_client).expect("failed to create handler");
+    let config = QuicClientConfig {
+        connection_timeout: Duration::from_millis(1_000),
+        skip_preflight: true,
+        connection_pool_size: 10,
+    };
+    let quic_client = match SolanaQuicClient::new(keypair, Some(config)) {
+        Ok(x) => x,
+        Err(e) => panic!(
+            "quic client configuration failed: rpc url {}; error {}",
+            rpc_url, e
+        ),
+    };
+
+    let handler = match QuicRequestHandler::new(rpc_client, quic_client) {
+        Ok(x) => x,
+        Err(e) => panic!(
+            "quic request handler failed: rpc url {}; error {}",
+            rpc_url, e
+        ),
+    };
     let p = PathBuf::from(std::env::var("BUFFER_PATH").expect("need BUFFER_PATH"));
     let max_client: usize = match std::env::var("MAX_CLIENT") {
         Ok(x) => x.parse().expect("failed to parse MAX_CLIENT"),
