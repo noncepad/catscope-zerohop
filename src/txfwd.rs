@@ -76,7 +76,7 @@ where
             debug!("server - 3 - r {:?}", r);
             active_request.send_copy(JobResult { r })?;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(50));
     }
     debug!("server - 4");
     Ok(())

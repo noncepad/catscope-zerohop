@@ -4,6 +4,7 @@ use solana_sdk::{
     clock::Slot, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
 };
 use std::alloc::{Layout, alloc, alloc_zeroed};
+use std::time::{Duration, Instant};
 /// Core data structures shared between the CatScope runtime and plugins.
 use std::{
     collections::HashSet,
@@ -404,7 +405,7 @@ pub struct CatscopeTransaction {
     account: Vec<AccountId>,
 }
 pub struct CatscopeTransactionReadWrapper<'a> {
-    tx: &'a CatscopeTransaction,
+    pub tx: &'a CatscopeTransaction,
 }
 impl<'a> TryFrom<&[u8]> for CatscopeTransactionReadWrapper<'a> {
     type Error = CatscopeZerohopError;
@@ -743,6 +744,20 @@ pub fn convert_slot_status_to(statusu8: u8) -> Result<SlotStatus, CatscopeZeroho
         _ => return Err(CatscopeZerohopError::OutofRange),
     };
     Ok(x)
+}
+
+pub struct StillShotMeta {
+    pub last_time: Instant,
+    pub duration: Duration,
+}
+
+/// Access low latency updates.
+pub trait RollingWindow: Send + Sync {
+    fn meta(&self) -> &StillShotMeta;
+    /// write an account to a byte slice (Header + account body).
+    fn account(&self, buffer: &mut [u8]) -> usize;
+    /// write a transaction to a byte slice.
+    fn transaction(&self, buffer: &mut [u8]) -> usize;
 }
 
 mod tests {

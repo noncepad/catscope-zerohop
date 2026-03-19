@@ -7,8 +7,8 @@ use std::{
 use crate::{
     err::CatscopeZerohopError,
     store::{
-        AccountId, BlobView, CatscopeTransaction, CatscopeTransactionResult, Depth, SlotWithStatus,
-        SolanaAccount, TransactionResult, Weight,
+        AccountId, BlobView, CatscopeTransaction, CatscopeTransactionResult, Depth, RollingWindow,
+        SlotWithStatus, SolanaAccount, TransactionResult, Weight,
     },
 };
 use solana_sdk::{
@@ -30,7 +30,10 @@ pub trait GraphClient: Send + Sync {
     ///
     /// Returns the channels the plugin will listen on.
     /// If this fails, the plugin should treat it as fatal and stop.
-    fn connect(&self) -> Result<Box<dyn CatscopeReadChannelGroup>, CatscopeZerohopError>;
+    fn connect(
+        &self,
+        include_low_latency: bool,
+    ) -> Result<Box<dyn CatscopeReadChannelGroup>, CatscopeZerohopError>;
 
     fn poller(&self) -> Box<dyn CatscopeBuffer>;
 
@@ -45,6 +48,7 @@ pub trait GraphClient: Send + Sync {
     /// Returns an error if slot updates cannot be provided.
     /// Plugins should treat this as a loss of signal and assume pipeline is unhealthy
     fn slot(&self) -> Result<flume::Receiver<SlotWithStatus>, CatscopeZerohopError>;
+
     fn neighbor(
         &self,
         account_id: AccountId,
@@ -180,12 +184,12 @@ pub trait CatscopeReadChannelGroup: Send + Sync {
 /// * `Ack` - TODO: Document acknowledgment events
 /// * `Commit` - TODO: Document commit events
 pub enum Event {
-    /// TODO: Document what this acknowledgment means
+    /// notification that a subscription has landed
     Ack(SubscriptionId),
-    /// TODO: Document commit data structure
+    /// finalized account state
     Commit(Box<dyn Commit>),
-    //Transaction(Box<dyn CatscopeTransactionResult>),
-    //Account(SolanaAccount),
+    // get the unconfirmed account and transactions as they arrive over the gossip protocol
+    LowLatency(Box<dyn RollingWindow>),
 }
 
 /// ======================================================================
