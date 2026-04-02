@@ -1,7 +1,8 @@
 use agave_geyser_plugin_interface::geyser_plugin_interface::SlotStatus;
 use solana_sdk::signature::SIGNATURE_BYTES;
 use solana_sdk::{
-    clock::Slot, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
+    clock::Slot, instruction::InstructionError, pubkey::Pubkey, signature::Signature,
+    transaction::TransactionError,
 };
 use std::alloc::{Layout, alloc, alloc_zeroed};
 use std::time::{Duration, Instant};
@@ -14,7 +15,10 @@ use std::{
 };
 use wincode::{SchemaRead, SchemaWrite};
 
-use crate::{err::CatscopeZerohopError, util::bytes_to_struct};
+use crate::{
+    err::CatscopeZerohopError,
+    util::{as_bytes, as_bytes_slice, bytes_to_struct},
+};
 
 /// ======================================================================
 /// LIFECYCLE & IDENTITY
@@ -404,14 +408,242 @@ pub struct CatscopeTransaction {
     /// Sorted list of account IDs touched by this transaction.
     account: Vec<AccountId>,
 }
-pub struct CatscopeTransactionReadWrapper<'a> {
-    pub tx: &'a CatscopeTransaction,
+// ---------------------------------------------------------------------------
+// Wire format
+// ---------------------------------------------------------------------------
+//
+// Layout (all little-endian, naturally aligned):
+//
+//   CatscopeTransactionHeader          96 bytes  (fixed)
+//   outer:              outer_len × 16 bytes  (CatscopeInstruction, align 8)
+//   inner:              inner_len × 16 bytes  (CatscopeInstruction, align 8)
+//   account:            account_len × 8 bytes  (AccountId = u64,    align 8)
+//   account_chunk:  account_chunk_len × 8 bytes  (AccountId,        align 8)
+//   account_chunk_last: ix_count × 2 bytes  (u16, ix_count = outer+inner, align 2)
+//   data_chunk_last:    ix_count × 2 bytes  (u16,                   align 2)
+//   l1_inner:           outer_len × 1 byte   (u8)
+//   data_chunk:     data_chunk_len × 1 byte   (u8)
+//
+// The header is 96 bytes so all 8-byte-aligned sections start correctly
+// provided the buffer itself is at least 8-byte aligned (true for any
+// heap allocation or mmap).
+
+#[repr(C)]
+struct CatscopeTransactionHeader {
+    signature: [u8; SIGNATURE_BYTES], // offset  0, 64 bytes
+    index: u64,                       // offset 64
+    outer_len: u32,                   // offset 72
+    inner_len: u32,                   // offset 76
+    account_len: u32,                 // offset 80
+    account_chunk_len: u32,           // offset 84
+    data_chunk_len: u32,              // offset 88
+    _pad: u32,                        // offset 92 → total 96, align 8
 }
-impl<'a> TryFrom<&[u8]> for CatscopeTransactionReadWrapper<'a> {
+
+impl CatscopeTransaction {
+    /// Serialize into `buf` using the catscope wire format.
+    /// No intermediate allocation: each field is appended in one `extend_from_slice`.
+    pub fn write_to(&self, buf: &mut Vec<u8>) {
+        let outer_len = self.outer.len() as u32;
+        let inner_len = self.inner.len() as u32;
+        let ix_count = (outer_len + inner_len) as usize;
+        debug_assert_eq!(self.account_chunk_last.len(), ix_count);
+        debug_assert_eq!(self.data_chunk_last.len(), ix_count);
+        debug_assert_eq!(self.l1_inner.len(), outer_len as usize);
+
+        let hdr = CatscopeTransactionHeader {
+            signature: self.signature,
+            index: self.index,
+            outer_len,
+            inner_len,
+            account_len: self.account.len() as u32,
+            account_chunk_len: self.account_chunk.len() as u32,
+            data_chunk_len: self.data_chunk.len() as u32,
+            _pad: 0,
+        };
+        buf.extend_from_slice(as_bytes(&hdr));
+        buf.extend_from_slice(as_bytes_slice(&self.outer));
+        buf.extend_from_slice(as_bytes_slice(&self.inner));
+        buf.extend_from_slice(as_bytes_slice(&self.account));
+        buf.extend_from_slice(as_bytes_slice(&self.account_chunk));
+        buf.extend_from_slice(as_bytes_slice(&self.account_chunk_last));
+        buf.extend_from_slice(as_bytes_slice(&self.data_chunk_last));
+        buf.extend_from_slice(&self.l1_inner);
+        buf.extend_from_slice(&self.data_chunk);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Zero-copy read view
+// ---------------------------------------------------------------------------
+
+/// Zero-copy view of a serialized [`CatscopeTransaction`].
+///
+/// Constructed via `TryFrom<&'a [u8]>` — no allocation, all fields are
+/// slices into the original buffer.
+pub struct CatscopeTransactionReadWrapper<'a> {
+    pub signature: &'a [u8; SIGNATURE_BYTES],
+    pub index: u64,
+    pub account: &'a [AccountId],
+    pub l1_inner: &'a [u8],
+    pub data_chunk: &'a [u8],
+    outer: &'a [CatscopeInstruction],
+    inner: &'a [CatscopeInstruction],
+    account_chunk: &'a [AccountId],
+    account_chunk_last: &'a [u16],
+    data_chunk_last: &'a [u16],
+}
+
+impl<'a> CatscopeTransactionReadWrapper<'a> {
+    /// Iterate over outer (client-submitted) instructions.
+    pub fn outer(&'a self) -> impl Iterator<Item = CatscopeInstructionViewRead<'a>> {
+        (0..self.outer.len()).map(move |i| CatscopeInstructionViewRead {
+            i: IxIndex::Outer(i),
+            view: self,
+        })
+    }
+
+    /// Iterate over inner (CPI) instructions.
+    pub fn inner(&'a self) -> impl Iterator<Item = CatscopeInstructionViewRead<'a>> {
+        (0..self.inner.len()).map(move |i| CatscopeInstructionViewRead {
+            i: IxIndex::Inner(i),
+            view: self,
+        })
+    }
+}
+
+/// Instruction accessor for a zero-copy [`CatscopeTransactionReadWrapper`].
+pub struct CatscopeInstructionViewRead<'a> {
+    i: IxIndex,
+    view: &'a CatscopeTransactionReadWrapper<'a>,
+}
+
+impl<'a> CatscopeInstructionViewRead<'a> {
+    pub fn program(&self) -> &AccountId {
+        match self.i {
+            IxIndex::Outer(i) => &self.view.outer[i].program,
+            IxIndex::Inner(i) => &self.view.inner[i].program,
+        }
+    }
+
+    pub fn data(&self) -> &[u8] {
+        let ix = match self.i {
+            IxIndex::Outer(i) => &self.view.outer[i],
+            IxIndex::Inner(i) => &self.view.inner[i],
+        };
+        let chunk_i = ix.data_chunk_i as usize;
+        let (start, finish) = if chunk_i == 0 {
+            (0, self.view.data_chunk_last[chunk_i])
+        } else {
+            (
+                self.view.data_chunk_last[chunk_i - 1],
+                self.view.data_chunk_last[chunk_i],
+            )
+        };
+        &self.view.data_chunk[(start as usize)..(finish as usize)]
+    }
+
+    pub fn account(&self) -> &[AccountId] {
+        let ix = match self.i {
+            IxIndex::Outer(i) => &self.view.outer[i],
+            IxIndex::Inner(i) => &self.view.inner[i],
+        };
+        let chunk_i = ix.account_chunk_i as usize;
+        let (start, finish) = if chunk_i == 0 {
+            (0, self.view.account_chunk_last[chunk_i])
+        } else {
+            (
+                self.view.account_chunk_last[chunk_i - 1],
+                self.view.account_chunk_last[chunk_i],
+            )
+        };
+        &self.view.account_chunk[(start as usize)..(finish as usize)]
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for CatscopeTransactionReadWrapper<'a> {
     type Error = CatscopeZerohopError;
 
-    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
-        todo!()
+    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
+        use std::mem::{align_of, size_of};
+
+        // --- helper: advance `offset` by `count` elements of type T,
+        //     returning a typed slice aliasing `data` ---
+        unsafe fn take_slice<'b, T>(
+            data: &'b [u8],
+            offset: &mut usize,
+            count: usize,
+        ) -> Result<&'b [T], CatscopeZerohopError> {
+            let byte_len = count
+                .checked_mul(size_of::<T>())
+                .ok_or(CatscopeZerohopError::OutofRange)?;
+            let start = *offset;
+            let end = start
+                .checked_add(byte_len)
+                .ok_or(CatscopeZerohopError::OutofRange)?;
+            if end > data.len() {
+                return Err(CatscopeZerohopError::OutofRange);
+            }
+            let ptr = data[start..end].as_ptr() as *const T;
+            if (ptr as usize) % align_of::<T>() != 0 {
+                return Err(CatscopeZerohopError::UnalignedMemory);
+            }
+            *offset = end;
+            Ok(std::slice::from_raw_parts(ptr, count))
+        }
+
+        let hdr_size = std::mem::size_of::<CatscopeTransactionHeader>();
+        if data.len() < hdr_size {
+            return Err(CatscopeZerohopError::OutofRange);
+        }
+
+        // SAFETY: header is repr(C) with all valid bit patterns; we checked
+        // both the length and alignment of the buffer.
+        let hdr = unsafe {
+            let ptr = data.as_ptr() as *const CatscopeTransactionHeader;
+            if (ptr as usize) % std::mem::align_of::<CatscopeTransactionHeader>() != 0 {
+                return Err(CatscopeZerohopError::UnalignedMemory);
+            }
+            &*ptr
+        };
+
+        let outer_len = hdr.outer_len as usize;
+        let inner_len = hdr.inner_len as usize;
+        let account_len = hdr.account_len as usize;
+        let account_chunk_len = hdr.account_chunk_len as usize;
+        let data_chunk_len = hdr.data_chunk_len as usize;
+        let ix_count = outer_len
+            .checked_add(inner_len)
+            .ok_or(CatscopeZerohopError::OutofRange)?;
+
+        let mut off = hdr_size;
+        // SAFETY: each take_slice call checks bounds and alignment.
+        unsafe {
+            let outer = take_slice::<CatscopeInstruction>(data, &mut off, outer_len)?;
+            let inner = take_slice::<CatscopeInstruction>(data, &mut off, inner_len)?;
+            let account = take_slice::<AccountId>(data, &mut off, account_len)?;
+            let account_chunk = take_slice::<AccountId>(data, &mut off, account_chunk_len)?;
+            let account_chunk_last = take_slice::<u16>(data, &mut off, ix_count)?;
+            let data_chunk_last = take_slice::<u16>(data, &mut off, ix_count)?;
+            let l1_inner = take_slice::<u8>(data, &mut off, outer_len)?;
+            let data_chunk = take_slice::<u8>(data, &mut off, data_chunk_len)?;
+
+            // signature lives inside the header, which is borrowed from `data`
+            let signature = &*(hdr.signature.as_ptr() as *const [u8; SIGNATURE_BYTES]);
+
+            Ok(Self {
+                signature,
+                index: hdr.index,
+                outer,
+                inner,
+                account,
+                account_chunk,
+                account_chunk_last,
+                data_chunk_last,
+                l1_inner,
+                data_chunk,
+            })
+        }
     }
 }
 impl Default for CatscopeTransaction {
@@ -442,6 +674,7 @@ impl CatscopeTransaction {
     pub fn append_outer<'a, 'b: 'a>(&'b mut self) -> CatscopeInstructionWrite<'a> {
         let i = IxIndex::Outer(self.outer.len());
         self.outer.push(CatscopeInstruction::default());
+        self.l1_inner.push(0);
         let account_chunk_i = self.account_chunk_last.len();
         self.account_chunk_last.push(0);
         let data_chunk_i = self.data_chunk_last.len();
@@ -456,8 +689,12 @@ impl CatscopeTransaction {
         }
     }
 
-    /// Append a group of inner instructions.
-    pub fn append_inner<'a, 'b: 'a>(&'b mut self) -> CatscopeInstructionWrite<'a> {
+    /// Append an inner instruction belonging to the outer instruction at `outer_idx`.
+    pub fn append_inner<'a, 'b: 'a>(
+        &'b mut self,
+        outer_idx: usize,
+    ) -> CatscopeInstructionWrite<'a> {
+        self.l1_inner[outer_idx] += 1;
         let i = IxIndex::Inner(self.inner.len());
         self.inner.push(CatscopeInstruction::default());
         let account_chunk_i = self.account_chunk_last.len();
@@ -746,6 +983,285 @@ pub fn convert_slot_status_to(statusu8: u8) -> Result<SlotStatus, CatscopeZeroho
     Ok(x)
 }
 
+// ---------------------------------------------------------------------------
+// Result<Slot, TransactionError> — 16-byte encoding
+// ---------------------------------------------------------------------------
+//
+//  [0]     result_tag:  0 = Ok,  1 = Err
+//  [1]     tx_disc:     TransactionError variant index (0-based, enum declaration order)
+//  [2]     ie_disc:     InstructionError variant index (only when tx_disc == 8)
+//  [3]     aux_u8:      • InstructionError(u8, _)               → instruction index
+//                       • DuplicateInstruction(u8)              → instruction index
+//                       • InsufficientFundsForRent{account_index}
+//                       • ProgramExecutionTemporarilyRestricted{account_index}
+//  [4..8]  custom_u32:  InstructionError::Custom(u32) payload, little-endian
+//  [8..16] slot:        Ok(Slot) value, little-endian
+
+/// Encode `Result<Slot, TransactionError>` into exactly 16 bytes.
+pub fn result_to_bytes(result: &Result<Slot, TransactionError>) -> [u8; 16] {
+    let mut buf = [0u8; 16];
+    match result {
+        Ok(slot) => {
+            buf[0] = 0;
+            buf[8..16].copy_from_slice(&slot.to_le_bytes());
+        }
+        Err(e) => {
+            buf[0] = 1;
+            let (tx_disc, aux, ie_disc, custom) = encode_tx_error(e);
+            buf[1] = tx_disc;
+            buf[2] = ie_disc;
+            buf[3] = aux;
+            buf[4..8].copy_from_slice(&custom.to_le_bytes());
+        }
+    }
+    buf
+}
+
+/// Decode `Result<Slot, TransactionError>` from 16 bytes produced by [`result_to_bytes`].
+pub fn result_from_bytes(
+    buf: &[u8; 16],
+) -> Result<Result<Slot, TransactionError>, CatscopeZerohopError> {
+    match buf[0] {
+        0 => {
+            let slot = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+            Ok(Ok(slot))
+        }
+        1 => {
+            let tx_disc = buf[1];
+            let ie_disc = buf[2];
+            let aux = buf[3];
+            let custom = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+            Ok(Err(decode_tx_error(tx_disc, aux, ie_disc, custom)?))
+        }
+        _ => Err(CatscopeZerohopError::OutofRange),
+    }
+}
+
+fn encode_tx_error(e: &TransactionError) -> (u8, u8, u8, u32) {
+    // returns (tx_disc, aux_u8, ie_disc, custom_u32)
+    match e {
+        TransactionError::AccountInUse => (0, 0, 0, 0),
+        TransactionError::AccountLoadedTwice => (1, 0, 0, 0),
+        TransactionError::AccountNotFound => (2, 0, 0, 0),
+        TransactionError::ProgramAccountNotFound => (3, 0, 0, 0),
+        TransactionError::InsufficientFundsForFee => (4, 0, 0, 0),
+        TransactionError::InvalidAccountForFee => (5, 0, 0, 0),
+        TransactionError::AlreadyProcessed => (6, 0, 0, 0),
+        TransactionError::BlockhashNotFound => (7, 0, 0, 0),
+        TransactionError::InstructionError(ix, ie) => {
+            let (ie_disc, custom) = encode_instruction_error(ie);
+            (8, *ix, ie_disc, custom)
+        }
+        TransactionError::CallChainTooDeep => (9, 0, 0, 0),
+        TransactionError::MissingSignatureForFee => (10, 0, 0, 0),
+        TransactionError::InvalidAccountIndex => (11, 0, 0, 0),
+        TransactionError::SignatureFailure => (12, 0, 0, 0),
+        TransactionError::InvalidProgramForExecution => (13, 0, 0, 0),
+        TransactionError::SanitizeFailure => (14, 0, 0, 0),
+        TransactionError::ClusterMaintenance => (15, 0, 0, 0),
+        TransactionError::AccountBorrowOutstanding => (16, 0, 0, 0),
+        TransactionError::WouldExceedMaxBlockCostLimit => (17, 0, 0, 0),
+        TransactionError::UnsupportedVersion => (18, 0, 0, 0),
+        TransactionError::InvalidWritableAccount => (19, 0, 0, 0),
+        TransactionError::WouldExceedMaxAccountCostLimit => (20, 0, 0, 0),
+        TransactionError::WouldExceedAccountDataBlockLimit => (21, 0, 0, 0),
+        TransactionError::TooManyAccountLocks => (22, 0, 0, 0),
+        TransactionError::AddressLookupTableNotFound => (23, 0, 0, 0),
+        TransactionError::InvalidAddressLookupTableOwner => (24, 0, 0, 0),
+        TransactionError::InvalidAddressLookupTableData => (25, 0, 0, 0),
+        TransactionError::InvalidAddressLookupTableIndex => (26, 0, 0, 0),
+        TransactionError::InvalidRentPayingAccount => (27, 0, 0, 0),
+        TransactionError::WouldExceedMaxVoteCostLimit => (28, 0, 0, 0),
+        TransactionError::WouldExceedAccountDataTotalLimit => (29, 0, 0, 0),
+        TransactionError::DuplicateInstruction(ix) => (30, *ix, 0, 0),
+        TransactionError::InsufficientFundsForRent { account_index } => (31, *account_index, 0, 0),
+        TransactionError::MaxLoadedAccountsDataSizeExceeded => (32, 0, 0, 0),
+        TransactionError::InvalidLoadedAccountsDataSizeLimit => (33, 0, 0, 0),
+        TransactionError::ResanitizationNeeded => (34, 0, 0, 0),
+        TransactionError::ProgramExecutionTemporarilyRestricted { account_index } => {
+            (35, *account_index, 0, 0)
+        }
+        TransactionError::UnbalancedTransaction => (36, 0, 0, 0),
+        TransactionError::ProgramCacheHitMaxLimit => (37, 0, 0, 0),
+        TransactionError::CommitCancelled => (38, 0, 0, 0),
+    }
+}
+
+fn encode_instruction_error(ie: &InstructionError) -> (u8, u32) {
+    // returns (ie_disc, custom_u32)
+    match ie {
+        InstructionError::GenericError => (0, 0),
+        InstructionError::InvalidArgument => (1, 0),
+        InstructionError::InvalidInstructionData => (2, 0),
+        InstructionError::InvalidAccountData => (3, 0),
+        InstructionError::AccountDataTooSmall => (4, 0),
+        InstructionError::InsufficientFunds => (5, 0),
+        InstructionError::IncorrectProgramId => (6, 0),
+        InstructionError::MissingRequiredSignature => (7, 0),
+        InstructionError::AccountAlreadyInitialized => (8, 0),
+        InstructionError::UninitializedAccount => (9, 0),
+        InstructionError::UnbalancedInstruction => (10, 0),
+        InstructionError::ModifiedProgramId => (11, 0),
+        InstructionError::ExternalAccountLamportSpend => (12, 0),
+        InstructionError::ExternalAccountDataModified => (13, 0),
+        InstructionError::ReadonlyLamportChange => (14, 0),
+        InstructionError::ReadonlyDataModified => (15, 0),
+        InstructionError::DuplicateAccountIndex => (16, 0),
+        InstructionError::ExecutableModified => (17, 0),
+        InstructionError::RentEpochModified => (18, 0),
+        InstructionError::NotEnoughAccountKeys => (19, 0),
+        InstructionError::AccountDataSizeChanged => (20, 0),
+        InstructionError::AccountNotExecutable => (21, 0),
+        InstructionError::AccountBorrowFailed => (22, 0),
+        InstructionError::AccountBorrowOutstanding => (23, 0),
+        InstructionError::DuplicateAccountOutOfSync => (24, 0),
+        InstructionError::Custom(code) => (25, *code),
+        InstructionError::InvalidError => (26, 0),
+        InstructionError::ExecutableDataModified => (27, 0),
+        InstructionError::ExecutableLamportChange => (28, 0),
+        InstructionError::ExecutableAccountNotRentExempt => (29, 0),
+        InstructionError::UnsupportedProgramId => (30, 0),
+        InstructionError::CallDepth => (31, 0),
+        InstructionError::MissingAccount => (32, 0),
+        InstructionError::ReentrancyNotAllowed => (33, 0),
+        InstructionError::MaxSeedLengthExceeded => (34, 0),
+        InstructionError::InvalidSeeds => (35, 0),
+        InstructionError::InvalidRealloc => (36, 0),
+        InstructionError::ComputationalBudgetExceeded => (37, 0),
+        InstructionError::PrivilegeEscalation => (38, 0),
+        InstructionError::ProgramEnvironmentSetupFailure => (39, 0),
+        InstructionError::ProgramFailedToComplete => (40, 0),
+        InstructionError::ProgramFailedToCompile => (41, 0),
+        InstructionError::Immutable => (42, 0),
+        InstructionError::IncorrectAuthority => (43, 0),
+        InstructionError::BorshIoError => (44, 0),
+        InstructionError::AccountNotRentExempt => (45, 0),
+        InstructionError::InvalidAccountOwner => (46, 0),
+        InstructionError::ArithmeticOverflow => (47, 0),
+        InstructionError::UnsupportedSysvar => (48, 0),
+        InstructionError::IllegalOwner => (49, 0),
+        InstructionError::MaxAccountsDataAllocationsExceeded => (50, 0),
+        InstructionError::MaxAccountsExceeded => (51, 0),
+        InstructionError::MaxInstructionTraceLengthExceeded => (52, 0),
+        InstructionError::BuiltinProgramsMustConsumeComputeUnits => (53, 0),
+    }
+}
+
+fn decode_tx_error(
+    tx_disc: u8,
+    aux: u8,
+    ie_disc: u8,
+    custom: u32,
+) -> Result<TransactionError, CatscopeZerohopError> {
+    let e = match tx_disc {
+        0 => TransactionError::AccountInUse,
+        1 => TransactionError::AccountLoadedTwice,
+        2 => TransactionError::AccountNotFound,
+        3 => TransactionError::ProgramAccountNotFound,
+        4 => TransactionError::InsufficientFundsForFee,
+        5 => TransactionError::InvalidAccountForFee,
+        6 => TransactionError::AlreadyProcessed,
+        7 => TransactionError::BlockhashNotFound,
+        8 => TransactionError::InstructionError(aux, decode_instruction_error(ie_disc, custom)?),
+        9 => TransactionError::CallChainTooDeep,
+        10 => TransactionError::MissingSignatureForFee,
+        11 => TransactionError::InvalidAccountIndex,
+        12 => TransactionError::SignatureFailure,
+        13 => TransactionError::InvalidProgramForExecution,
+        14 => TransactionError::SanitizeFailure,
+        15 => TransactionError::ClusterMaintenance,
+        16 => TransactionError::AccountBorrowOutstanding,
+        17 => TransactionError::WouldExceedMaxBlockCostLimit,
+        18 => TransactionError::UnsupportedVersion,
+        19 => TransactionError::InvalidWritableAccount,
+        20 => TransactionError::WouldExceedMaxAccountCostLimit,
+        21 => TransactionError::WouldExceedAccountDataBlockLimit,
+        22 => TransactionError::TooManyAccountLocks,
+        23 => TransactionError::AddressLookupTableNotFound,
+        24 => TransactionError::InvalidAddressLookupTableOwner,
+        25 => TransactionError::InvalidAddressLookupTableData,
+        26 => TransactionError::InvalidAddressLookupTableIndex,
+        27 => TransactionError::InvalidRentPayingAccount,
+        28 => TransactionError::WouldExceedMaxVoteCostLimit,
+        29 => TransactionError::WouldExceedAccountDataTotalLimit,
+        30 => TransactionError::DuplicateInstruction(aux),
+        31 => TransactionError::InsufficientFundsForRent { account_index: aux },
+        32 => TransactionError::MaxLoadedAccountsDataSizeExceeded,
+        33 => TransactionError::InvalidLoadedAccountsDataSizeLimit,
+        34 => TransactionError::ResanitizationNeeded,
+        35 => TransactionError::ProgramExecutionTemporarilyRestricted { account_index: aux },
+        36 => TransactionError::UnbalancedTransaction,
+        37 => TransactionError::ProgramCacheHitMaxLimit,
+        38 => TransactionError::CommitCancelled,
+        _ => return Err(CatscopeZerohopError::OutofRange),
+    };
+    Ok(e)
+}
+
+fn decode_instruction_error(
+    ie_disc: u8,
+    custom: u32,
+) -> Result<InstructionError, CatscopeZerohopError> {
+    let ie = match ie_disc {
+        0 => InstructionError::GenericError,
+        1 => InstructionError::InvalidArgument,
+        2 => InstructionError::InvalidInstructionData,
+        3 => InstructionError::InvalidAccountData,
+        4 => InstructionError::AccountDataTooSmall,
+        5 => InstructionError::InsufficientFunds,
+        6 => InstructionError::IncorrectProgramId,
+        7 => InstructionError::MissingRequiredSignature,
+        8 => InstructionError::AccountAlreadyInitialized,
+        9 => InstructionError::UninitializedAccount,
+        10 => InstructionError::UnbalancedInstruction,
+        11 => InstructionError::ModifiedProgramId,
+        12 => InstructionError::ExternalAccountLamportSpend,
+        13 => InstructionError::ExternalAccountDataModified,
+        14 => InstructionError::ReadonlyLamportChange,
+        15 => InstructionError::ReadonlyDataModified,
+        16 => InstructionError::DuplicateAccountIndex,
+        17 => InstructionError::ExecutableModified,
+        18 => InstructionError::RentEpochModified,
+        19 => InstructionError::NotEnoughAccountKeys,
+        20 => InstructionError::AccountDataSizeChanged,
+        21 => InstructionError::AccountNotExecutable,
+        22 => InstructionError::AccountBorrowFailed,
+        23 => InstructionError::AccountBorrowOutstanding,
+        24 => InstructionError::DuplicateAccountOutOfSync,
+        25 => InstructionError::Custom(custom),
+        26 => InstructionError::InvalidError,
+        27 => InstructionError::ExecutableDataModified,
+        28 => InstructionError::ExecutableLamportChange,
+        29 => InstructionError::ExecutableAccountNotRentExempt,
+        30 => InstructionError::UnsupportedProgramId,
+        31 => InstructionError::CallDepth,
+        32 => InstructionError::MissingAccount,
+        33 => InstructionError::ReentrancyNotAllowed,
+        34 => InstructionError::MaxSeedLengthExceeded,
+        35 => InstructionError::InvalidSeeds,
+        36 => InstructionError::InvalidRealloc,
+        37 => InstructionError::ComputationalBudgetExceeded,
+        38 => InstructionError::PrivilegeEscalation,
+        39 => InstructionError::ProgramEnvironmentSetupFailure,
+        40 => InstructionError::ProgramFailedToComplete,
+        41 => InstructionError::ProgramFailedToCompile,
+        42 => InstructionError::Immutable,
+        43 => InstructionError::IncorrectAuthority,
+        44 => InstructionError::BorshIoError,
+        45 => InstructionError::AccountNotRentExempt,
+        46 => InstructionError::InvalidAccountOwner,
+        47 => InstructionError::ArithmeticOverflow,
+        48 => InstructionError::UnsupportedSysvar,
+        49 => InstructionError::IllegalOwner,
+        50 => InstructionError::MaxAccountsDataAllocationsExceeded,
+        51 => InstructionError::MaxAccountsExceeded,
+        52 => InstructionError::MaxInstructionTraceLengthExceeded,
+        53 => InstructionError::BuiltinProgramsMustConsumeComputeUnits,
+        _ => return Err(CatscopeZerohopError::OutofRange),
+    };
+    Ok(ie)
+}
+
 pub struct StillShotMeta {
     pub last_time: Instant,
     pub duration: Duration,
@@ -798,7 +1314,10 @@ mod tests {
         let ix_data: [u8; 4] = [0, 1, 13, 0];
         let mut catx = CatscopeTransaction::default();
         {
-            let mut inner = catx.append_inner();
+            catx.append_outer(); // inner instructions require an outer instruction
+        }
+        {
+            let mut inner = catx.append_inner(0);
             inner.program(program_id);
             let l_a = inner.account(2);
             l_a.copy_from_slice(&check_l_account_id);

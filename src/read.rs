@@ -143,7 +143,7 @@ pub trait CatscopeBuffer: Send + Sync {
     fn poll<'a, 'b: 'a>(
         &'b mut self,
         hs_account_id: &'b HashSet<AccountId, BuildHasherDefault<XxHash64>>,
-        hs_signature: &'b HashSet<Signature, BuildHasherDefault<XxHash64>>,
+        o_hs_signature: Option<&'b HashSet<Signature, BuildHasherDefault<XxHash64>>>,
     ) -> Option<StateWindow<'a>>;
 }
 
@@ -189,7 +189,7 @@ pub enum Event {
     /// finalized account state
     Commit(Box<dyn Commit>),
     // get the unconfirmed account and transactions as they arrive over the gossip protocol
-    LowLatency(Box<dyn RollingWindow>),
+    LowLatency(Vec<SolanaAccount>, Vec<Arc<dyn CatscopeTransactionResult>>),
 }
 
 /// ======================================================================

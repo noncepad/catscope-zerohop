@@ -29,6 +29,12 @@ pub fn as_bytes<T: Sized>(val: &T) -> &[u8] {
     unsafe { std::slice::from_raw_parts((val as *const T) as *const u8, std::mem::size_of::<T>()) }
 }
 
+pub fn as_bytes_slice<T: Sized>(s: &[T]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(s.as_ptr() as *const u8, s.len() * std::mem::size_of::<T>())
+    }
+}
+
 pub struct TokenReference<'a> {
     pub owner: &'a Pubkey,
     pub mint: &'a Pubkey,

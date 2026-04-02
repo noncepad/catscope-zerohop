@@ -17,7 +17,6 @@ use signal_hook::{
     consts::signal::{SIGINT, SIGTERM},
     iterator::Signals,
 };
-use solana_client::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::EncodableKey};
 
 fn main() {
@@ -38,7 +37,6 @@ fn main() {
     });
 
     let rpc_url = std::env::var("RPC_URL").expect("need RPC_URL");
-    let rpc_client = RpcClient::new(rpc_url.clone());
     let keypair = Keypair::read_from_file(std::env::var("KEYPAIR").expect("need KEYPAIR")).unwrap();
     let config = QuicClientConfig {
         connection_timeout: Duration::from_millis(1_000),
@@ -53,7 +51,7 @@ fn main() {
         ),
     };
 
-    let handler = match QuicRequestHandler::new(rpc_client, quic_client) {
+    let handler = match QuicRequestHandler::new(rpc_url.clone(), quic_client) {
         Ok(x) => x,
         Err(e) => panic!(
             "quic request handler failed: rpc url {}; error {}",

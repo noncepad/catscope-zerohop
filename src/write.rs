@@ -1,6 +1,6 @@
+use solana_sdk::{clock::Slot, signature::Signature, transaction::TransactionError};
+
 use crate::{err::CatscopeZerohopError, read::ClientId};
-
-
 
 /// Interface for submitting transactions to the runtime.
 pub trait TransactionProcessor: Send + Sync {
@@ -26,6 +26,12 @@ pub trait TransactionProcessor: Send + Sync {
         }
         Ok(())
     }
+
+    fn tx_result(
+        &self,
+        signature: Signature,
+        response_sx: flume::Sender<Result<Slot, TransactionError>>,
+    );
 }
 
 /// Placeholder for when the scheduler becomes available.

@@ -1,6 +1,6 @@
 [package]
 name = "catscope-zerohop"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 
 [dependencies]
@@ -31,3 +31,7 @@ num_cpus = "1.17.0"
 [[bin]]
 name = "catfwd"
 path = "src/bin/catfwd.rs"
+
+[package.metadata.deb]
+maintainer = "Joel De Jesus <joel@noncepad.com>"
+assets = [["./target/release/catfwd", "/usr/bin/catfwd", "0755"]]

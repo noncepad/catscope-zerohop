@@ -13,10 +13,26 @@ variables:
   GIT_SUBMODULE_STRATEGY: recursive
   MINOR_VERSION: "2"
   TARGET_IMAGE: $CI_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_BRANCH
-  VALIDATOR_IMAGE: $CI_REGISTRY/$CI_PROJECT_PATH/validator:$CI_COMMIT_BRANCH
-  RUST_VERSION: "1.89.0"
+  RUST_VERSION: "1.89"
 
   # "cli" "accounts-bench" "accounts-cluster-bench" "banking-bench" "bench-streamer" "bench-tps" "dos" "faucet" "genesis" "gossip" "install" "install-init" "ip-address" "ip-address-server" "keygen" "ledger-tool" "ledger-udev" "log-analyzer" "merkle-root-bench" "net-shaper" "poh-bench" "stake-accounts" "store-tool" "test-validator" "tokens" "transaction-dos" "upload-perf" "validator" "watchtower" "zk-keygen"
+
+build_deb:
+  stage: build
+  tags: ["d-3"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+  image: rust:${RUST_VERSION}-trixie
+  script:
+    - cargo install cargo-deb
+    - apt-get update && apt-get install -y libclang-dev libclang-dev cmake g++ pkg-config libssl-dev libudev-dev dpkg-dev
+    - cargo build --release
+    - cargo deb
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - ./target/debian
 
 build_tar:
   stage: assemble
@@ -32,6 +48,32 @@ build_tar:
     paths:
       - ./out.tar
 
+save_deb_docker: &build_deb_docker
+  stage: assemble
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  tags: ["d-3"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+  needs:
+    - job: build_deb
+      artifacts: true
+  before_script:
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"},\"$CI_DEPENDENCY_PROXY_SERVER\":{\"auth\":\"$(printf "%s:%s" ${CI_DEPENDENCY_PROXY_USER} "${CI_DEPENDENCY_PROXY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+  # CI_COMMIT_TAG needs to be filled in to get a version number
+  script:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --build-arg "PROJECT=$CI_REGISTRY/eflam/solana/debian"
+      --build-arg "PROJECT_BRANCH=main"
+      --build-arg "BUILDER_IMAGE=${CI_REGISTRY}/eflam/builder/compact"
+      --build-arg "BUILDER_IMAGE_TAG=main-bookworm"
+      --dockerfile "${CI_PROJECT_DIR}/contrib/Dockerfile"
+      --destination "${CI_REGISTRY}/${CI_PROJECT_PATH}/debian:${CI_COMMIT_BRANCH}"
+      --compressed-caching=true --force
+
 deploy_source:
   stage: publish
   tags: ["deploy", "bastion"]
@@ -41,7 +83,6 @@ deploy_source:
   variables:
     COMMIT_MSG: "doing update"
     # do not increase major version past 0 or else go list will fail
-    AGAVE_BASE: "v3.1.5"
     TARGET_PROJECT: ${CI_PROJECT_NAME}
     TARGET_GIT_DIR: "/var/share/noncepad/git/${TARGET_PROJECT}.git"
   needs:

@@ -5,9 +5,10 @@
 //! The client uses a Solana keypair for QUIC TLS authentication, which is
 //! required by Solana's staked connection protocol.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use iceoryx2::prelude::ZeroCopySend;
@@ -161,6 +162,11 @@ impl SolanaQuicClient {
     /// Returns a reference to the client's keypair.
     pub fn keypair(&self) -> &Keypair {
         &self.keypair
+    }
+
+    /// Returns a reference to the client's configuration.
+    pub fn config(&self) -> &QuicClientConfig {
+        &self.config
     }
 
     /// Returns the public key of the client's keypair.
@@ -319,23 +325,23 @@ pub fn get_leader_tpu_addresses(
 
     // Get current slot
     let current_slot = rpc_client.get_slot().map_err(|e| {
-        CatscopeZerohopError::ConnectionError(format!("Failed to get current slot: {}", e))
+        CatscopeZerohopError::ConnectionError(format!("Failed to get current slot: {e}"))
     })?;
 
-    debug!("Current slot: {}", current_slot);
+    //debug!("Current slot: {}", current_slot);
 
     // Get upcoming slot leaders
     let leaders = rpc_client
         .get_slot_leaders(current_slot, num_leaders)
         .map_err(|e| {
-            CatscopeZerohopError::ConnectionError(format!("Failed to get slot leaders: {}", e))
+            CatscopeZerohopError::ConnectionError(format!("Failed to get slot leaders: {e}",))
         })?;
 
-    debug!("Got {} upcoming leaders", leaders.len());
+    //debug!("Got {} upcoming leaders", leaders.len());
 
     // Get cluster nodes to map pubkeys to TPU addresses
     let cluster_nodes = rpc_client.get_cluster_nodes().map_err(|e| {
-        CatscopeZerohopError::ConnectionError(format!("Failed to get cluster nodes: {}", e))
+        CatscopeZerohopError::ConnectionError(format!("Failed to get cluster nodes: {e}"))
     })?;
 
     // Build a map of pubkey -> TPU QUIC address
@@ -366,10 +372,7 @@ pub fn get_leader_tpu_addresses(
                 tpu_quic_addr,
             });
         } else {
-            warn!(
-                "No TPU address found for leader {} at slot {}",
-                leader, slot
-            );
+            warn!("No TPU address found for leader {leader} at slot {slot}",);
         }
     }
 
@@ -401,70 +404,165 @@ pub fn get_current_leader_tpu_address(
         })
 }
 
+/// How long to keep retrying a transaction batch.
+/// Solana blockhashes are valid for ~150 slots (~60 s); 30 s is a safe window.
+const PENDING_TX_TTL: Duration = Duration::from_secs(30);
+
+struct PendingBatch {
+    txs: Vec<Vec<u8>>,
+    sent_at: Instant,
+}
+
 /// Submit transactions to validators.
 pub struct QuicRequestHandler {
     response: TransactionResponse,
     quic: SolanaQuicClient,
-    rpc: RpcClient,
     l_tx: Vec<Vec<u8>>,
-    last_check: Instant,
-    interval: Duration,
-    l_leader: Vec<LeaderTpuInfo>,
+    /// Leader list kept fresh by the background refresh thread.
+    l_leader: Arc<Mutex<Vec<LeaderTpuInfo>>>,
+    /// Batches waiting to be retried by the background thread.
+    pending: Arc<Mutex<VecDeque<PendingBatch>>>,
+    refresh_stop: Arc<AtomicBool>,
+    refresh_thread: Option<std::thread::JoinHandle<()>>,
 }
+
 impl QuicRequestHandler {
+    /// * `rpc_url` — HTTP RPC endpoint used for leader-schedule queries.
+    /// * `quic_client` — authenticated QUIC sender.
+    ///
+    /// Performs an initial leader fetch synchronously, then spawns a background
+    /// thread that refreshes the list every ~400 ms (one Solana slot) regardless
+    /// of whether `on_request` is being called.
     pub fn new(
-        rpc_client: RpcClient,
+        rpc_url: String,
         quic_client: SolanaQuicClient,
     ) -> Result<Self, CatscopeZerohopError> {
-        let l_leader = get_leader_tpu_addresses(&rpc_client, Some(4))?;
+        // Best-effort initial fetch — if the RPC is unreliable at startup,
+        // start with an empty list and let the background thread fill it in.
+        let rpc = RpcClient::new(rpc_url.clone());
+        let initial = match get_leader_tpu_addresses(&rpc, Some(8)) {
+            Ok(leaders) => leaders,
+            Err(e) => {
+                warn!("initial leader fetch failed, background thread will retry: {e}");
+                Vec::new()
+            }
+        };
+        let l_leader = Arc::new(Mutex::new(initial));
+
+        // Second QUIC client for the background retry thread.
+        // It shares the same keypair identity but has its own connection cache,
+        // so retries never contend with on_request sends.
+        let retry_quic = SolanaQuicClient::new(
+            quic_client.keypair().insecure_clone(),
+            Some(quic_client.config().clone()),
+        )?;
+
+        let pending = Arc::new(Mutex::new(VecDeque::<PendingBatch>::new()));
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_bg = stop.clone();
+        let l_leader_bg = l_leader.clone();
+        let pending_bg = pending.clone();
+
+        let handle = std::thread::spawn(move || {
+            let rpc = RpcClient::new(rpc_url);
+            // How long to wait between refresh attempts: shorter on failure.
+            let mut sleep_ms: u64 = 400;
+            loop {
+                // Sleep in 50 ms increments so shutdown is noticed quickly.
+                let steps = (sleep_ms / 50).max(1);
+                for _ in 0..steps {
+                    if stop_bg.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                match get_leader_tpu_addresses(&rpc, Some(8)) {
+                    Ok(leaders) => {
+                        sleep_ms = 400;
+                        *l_leader_bg.lock().unwrap() = leaders.clone();
+
+                        // Retry all pending batches against the fresh leader list.
+                        let now = Instant::now();
+                        let mut pending = pending_bg.lock().unwrap();
+                        pending.retain(|b| now.duration_since(b.sent_at) < PENDING_TX_TTL);
+                        for batch in &*pending {
+                            for leader in &leaders {
+                                if let Err(e) = retry_quic.send_wire_transactions_batch(
+                                    leader.tpu_quic_addr,
+                                    &batch.txs,
+                                ) {
+                                    debug!("retry send to {} failed: {e}", leader.tpu_quic_addr);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("leader refresh failed: {e}");
+                        // Back off up to 5 s so we don't hammer a flaky RPC.
+                        sleep_ms = (sleep_ms * 2).min(5_000);
+                    }
+                }
+            }
+        });
+
         Ok(Self {
-            l_leader,
-            interval: Duration::from_millis(150),
-            last_check: Instant::now(),
-            rpc: rpc_client,
             quic: quic_client,
-            response: TransactionResponse { sent_count: 0 },
             l_tx: Vec::default(),
+            response: TransactionResponse { sent_count: 0 },
+            l_leader,
+            pending,
+            refresh_stop: stop,
+            refresh_thread: Some(handle),
         })
     }
 }
+
+impl Drop for QuicRequestHandler {
+    fn drop(&mut self) {
+        self.refresh_stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.refresh_thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 impl RequestHandler<TransactionRequest, TransactionResponse> for QuicRequestHandler {
     fn on_request(
         &mut self,
         request: &TransactionRequest,
     ) -> Result<&TransactionResponse, CatscopeZerohopError> {
         let mut start = 0;
-        let mut finish;
         let n = request.count as usize;
-        debug!("on_request - 1 -  n {n}");
+        debug!("on_request - 1 - n {n}");
         self.l_tx.clear();
         for i in 0..n {
-            finish = request.list[i];
-            let subbuf = &request.data[(start as usize)..(finish as usize)];
-            self.l_tx.push(subbuf.to_vec());
+            let finish = request.list[i];
+            self.l_tx
+                .push(request.data[(start as usize)..(finish as usize)].to_vec());
             start = finish;
         }
         self.response.sent_count = 0;
-        let t = Instant::now();
-        if self.interval < t.duration_since(self.last_check) {
-            self.l_leader = get_leader_tpu_addresses(&self.rpc, Some(4))?;
-            self.last_check = t;
-        }
-        debug!("on_request - 2");
-        for leader in self.l_leader.iter() {
+
+        // Queue for background retry before the first send attempt.
+        self.pending.lock().unwrap().push_back(PendingBatch {
+            txs: self.l_tx[0..n].to_vec(),
+            sent_at: Instant::now(),
+        });
+
+        // Snapshot the current leader list without holding the lock during sends.
+        let leaders = self.l_leader.lock().unwrap().clone();
+        debug!("on_request - 2 - {} leaders", leaders.len());
+        for leader in &leaders {
             match self
                 .quic
                 .send_wire_transactions_batch(leader.tpu_quic_addr, &self.l_tx[0..n])
             {
-                Ok(_) => {
-                    self.response.sent_count += 1;
-                }
-                Err(e) => {
-                    debug!("failed to send transaction: {e}");
-                }
-            };
+                Ok(_) => self.response.sent_count += 1,
+                Err(e) => debug!("failed to send to {}: {e}", leader.tpu_quic_addr),
+            }
         }
-        debug!("on_request - 3 - {}", self.response.sent_count);
+        debug!("on_request - 3 - sent_count {}", self.response.sent_count);
         if self.response.sent_count == 0 {
             Err(CatscopeZerohopError::OutofRange)
         } else {

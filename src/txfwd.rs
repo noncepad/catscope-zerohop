@@ -53,13 +53,18 @@ where
     S: Clone + Copy + ZeroCopySend + std::fmt::Debug,
     RH: RequestHandler<T, S>,
 {
-    let node = NodeBuilder::new().create::<ipc::Service>()?;
+    let mut node_config = Config::default();
+    node_config.global.node.cleanup_dead_nodes_on_creation = true;
+    let node = NodeBuilder::new()
+        .config(&node_config)
+        .create::<ipc::Service>()?;
 
     let sn: ServiceName = ServiceName::new(service_name.to_str().unwrap())?;
     let service = node
         .service_builder(&sn)
         .request_response::<T, JobResult<S>>()
         .max_clients(max_client)
+        .max_nodes(256)
         .open_or_create()?;
 
     let server = service.server_builder().create()?;
