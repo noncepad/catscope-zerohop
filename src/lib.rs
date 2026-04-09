@@ -12,10 +12,14 @@ pub mod err;
 pub mod plugin;
 pub mod queue;
 pub mod quic;
-pub mod shard;
 pub mod read;
+pub mod shard;
 pub mod state;
 pub mod store;
 pub mod txfwd;
+pub mod usage;
 pub mod util;
 pub mod write;
+
+#[cfg(feature = "capacity")]
+pub mod relay;

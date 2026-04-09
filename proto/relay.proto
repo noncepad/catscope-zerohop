@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package relay;
+
+message Empty {}
+
+service Capacity {
+  rpc OnStatus(CapacityRequest) returns (stream CapacityStatus) {}
+}
+
+message CapacityRequest {}
+
+message CapacityStatus { float utilization_ratio = 1; }
+
+service Meter {
+  rpc GetStatus(StatusRequest) returns (Usage) {}
+  rpc OnStatus(StatusRequest) returns (stream Usage) {}
+}
+message StatusRequest {}
+message Usage {
+  uint64 usage = 1;
+  float utilization_rate =
+      2; // how much of the alloted bandwidth has the bidder used
+}
+
+/*
+Consumers that purchased bandwidth use this protobuf to send transactions to the
+staked validator.
+* Client=consumers
+* Server=staked validator proxy server
+*/
+service Endpoint {
+  // let consumers connect over clearnet
+  rpc GetClearNetAddress(EndpointRequest) returns (EndpointResponse) {}
+}
+
+message EndpointRequest {
+  bytes certificate = 1;
+  bytes pubkey = 2;
+  bytes nonce = 3;
+  bytes signature = 4;
+}
+
+message EndpointResponse { repeated string url = 1; }
+
+service Information {
+  rpc Get(InformationRequest) returns (ApiDescription) {}
+}
+message InformationRequest {}
+message ApiDescription {
+  string title = 1;
+  string description = 2;
+  uint64 feature_flag = 3;
+}
+

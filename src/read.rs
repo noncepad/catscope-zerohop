@@ -10,6 +10,7 @@ use crate::{
         AccountId, BlobView, CatscopeTransaction, CatscopeTransactionResult, Depth, RollingWindow,
         SlotWithStatus, SolanaAccount, TransactionResult, Weight,
     },
+    usage::{Capacity, Usage},
 };
 use solana_sdk::{
     clock::Slot, hash::Hash, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
@@ -25,7 +26,7 @@ use twox_hash::XxHash64;
 /// 1. Call `connect()` once to open a read session
 /// 2. Receive a channel group for this session
 /// 3. Create subscriptions and listen for events
-pub trait GraphClient: Send + Sync {
+pub trait GraphClient: Send + Sync + Capacity {
     /// Open a read session.
     ///
     /// Returns the channels the plugin will listen on.
@@ -188,7 +189,7 @@ pub enum Event {
     Ack(SubscriptionId),
     /// finalized account state
     Commit(Box<dyn Commit>),
-    // get the unconfirmed account and transactions as they arrive over the gossip protocol
+    /// get the unconfirmed account and transactions as they arrive over the gossip protocol
     LowLatency(Vec<SolanaAccount>, Vec<Arc<dyn CatscopeTransactionResult>>),
 }
 

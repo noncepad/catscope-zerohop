@@ -1,9 +1,9 @@
 use solana_sdk::{clock::Slot, signature::Signature, transaction::TransactionError};
 
-use crate::{err::CatscopeZerohopError, read::ClientId};
+use crate::{err::CatscopeZerohopError, read::ClientId, usage::Capacity};
 
 /// Interface for submitting transactions to the runtime.
-pub trait TransactionProcessor: Send + Sync {
+pub trait TransactionProcessor: Send + Sync + Capacity {
     /// Send out a single transaction. Do not wait for a result from the validator.
     /// Returns success if the validator receives the transaction to process.
     ///
