@@ -68,9 +68,17 @@ impl Capacity for CapacityImpl {
                 };
 
                 match msg {
-                    crate::usage::Usage::UtilizationRatio(ratio) => {
+                    crate::usage::Usage::UtilizationRatio(usage) => {
+                        // need to inverse to get idle capacity
+                        let idle = if usage < 0.0 {
+                            1.0
+                        } else if 1.0 < usage {
+                            0.0
+                        } else {
+                            1.0 - usage
+                        };
                         let cs = CapacityStatus {
-                            utilization_ratio: ratio,
+                            utilization_ratio: idle,
                         };
                         match sx2.send(Ok(cs)).await {
                             Ok(_) => {}
