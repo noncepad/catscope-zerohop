@@ -13,7 +13,7 @@ use crate::{
     err::CatscopeZerohopError,
     plugin::{CatscopeReader, CatscopeWriter},
 };
-use log::debug;
+use log::{debug, warn};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -53,6 +53,7 @@ impl Capacity for CapacityImpl {
         &self,
         _req: Request<CapacityRequest>,
     ) -> Result<Response<Self::OnStatusStream>, Status> {
+        warn!("on_status - 1");
         let (sx, rx) = tokio::sync::mpsc::channel(64);
         let (usage_sx, usage_rx) = flume::bounded(64);
         self.us.on_status(usage_sx);
@@ -67,6 +68,7 @@ impl Capacity for CapacityImpl {
                     }
                 };
 
+                warn!("on_status - 2 - msg");
                 match msg {
                     crate::usage::Usage::UtilizationRatio(usage) => {
                         // need to inverse to get idle capacity
@@ -80,6 +82,7 @@ impl Capacity for CapacityImpl {
                         let cs = CapacityStatus {
                             utilization_ratio: idle,
                         };
+                        warn!("on_status - 3 - idle {idle}");
                         match sx2.send(Ok(cs)).await {
                             Ok(_) => {}
                             Err(e) => return Err(CatscopeZerohopError::Unknown(e.to_string())),
@@ -89,6 +92,7 @@ impl Capacity for CapacityImpl {
             }
         });
         tokio::task::spawn(async move {
+            warn!("on_status - 4");
             let result: Result<(), CatscopeZerohopError> = match jh.await {
                 Ok(x) => x,
                 Err(e) => {
@@ -97,6 +101,7 @@ impl Capacity for CapacityImpl {
                     return;
                 }
             };
+            warn!("on_status - 5");
             match result {
                 Ok(_) => {}
                 Err(e) => {

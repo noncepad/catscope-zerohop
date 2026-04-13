@@ -15,15 +15,14 @@ variables:
   TARGET_IMAGE: $CI_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_BRANCH
   RUST_VERSION: "1.89"
 
-  # "cli" "accounts-bench" "accounts-cluster-bench" "banking-bench" "bench-streamer" "bench-tps" "dos" "faucet" "genesis" "gossip" "install" "install-init" "ip-address" "ip-address-server" "keygen" "ledger-tool" "ledger-udev" "log-analyzer" "merkle-root-bench" "net-shaper" "poh-bench" "stake-accounts" "store-tool" "test-validator" "tokens" "transaction-dos" "upload-perf" "validator" "watchtower" "zk-keygen"
-
 build_deb:
   stage: build
   tags: ["d-3"]
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "dev"
-  image: rust:${RUST_VERSION}-trixie
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "dev"
+  image: rust:${RUST_VERSION}-${OSVERSION}
+  variables:
+    OSVERSION: "trixie"
   script:
     - cargo install cargo-deb
     - apt-get update && apt-get install -y libclang-dev libclang-dev cmake g++ pkg-config libssl-dev libudev-dev dpkg-dev
@@ -33,20 +32,7 @@ build_deb:
     expire_in: 1 hour
     paths:
       - ./target/debian
-
-build_tar:
-  stage: assemble
-  tags: ["d-3"]
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "dev"
-  image: ${CI_REGISTRY}/eflam/builder/compact:main-bookworm
-  script:
-    - git archive --format=tar HEAD >out.tar
-  artifacts:
-    expire_in: 1 hour
-    paths:
-      - ./out.tar
+      - ./target/release/catfwd
 
 save_deb_docker: &build_deb_docker
   stage: assemble
@@ -55,17 +41,19 @@ save_deb_docker: &build_deb_docker
     entrypoint: [""]
   tags: ["d-3"]
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "dev"
   needs:
     - job: build_deb
       artifacts: true
+  variables:
+    OSVERSION: "trixie"
   before_script:
     - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"},\"$CI_DEPENDENCY_PROXY_SERVER\":{\"auth\":\"$(printf "%s:%s" ${CI_DEPENDENCY_PROXY_USER} "${CI_DEPENDENCY_PROXY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
   # CI_COMMIT_TAG needs to be filled in to get a version number
   script:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}"
+      --build-arg "OSVERSION=${OSVERSION}"
       --build-arg "PROJECT=$CI_REGISTRY/eflam/solana/debian"
       --build-arg "PROJECT_BRANCH=main"
       --build-arg "BUILDER_IMAGE=${CI_REGISTRY}/eflam/builder/compact"
@@ -73,6 +61,22 @@ save_deb_docker: &build_deb_docker
       --dockerfile "${CI_PROJECT_DIR}/contrib/Dockerfile"
       --destination "${CI_REGISTRY}/${CI_PROJECT_PATH}/debian:${CI_COMMIT_BRANCH}"
       --compressed-caching=true --force
+
+build_tar:
+  stage: assemble
+  tags: ["d-3"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+  image: ${CI_REGISTRY}/eflam/builder/compact:main-${OSVERSION}
+  variables:
+    OSVERSION: "trixie"
+  script:
+    - git archive --format=tar HEAD >out.tar
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - ./out.tar
 
 deploy_source:
   stage: publish
