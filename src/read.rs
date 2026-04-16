@@ -7,8 +7,8 @@ use std::{
 use crate::{
     err::CatscopeZerohopError,
     store::{
-        AccountId, BlobView, CatscopeTransaction, CatscopeTransactionResult, Depth, RollingWindow,
-        SlotWithStatus, SolanaAccount, TransactionResult, Weight,
+        AccountHeader, AccountId, BlobView, CatscopeTransaction, CatscopeTransactionResult, Depth,
+        RollingWindow, SlotWithStatus, SolanaAccount, TransactionResult, Weight,
     },
     usage::{Capacity, Usage},
 };
@@ -227,4 +227,44 @@ impl<'a> std::fmt::Debug for StateWindow<'a> {
             .field("l_tx", &self.l_tx)
             .finish()
     }
+}
+
+/// Make sure multiple delete notifications are not sent
+#[derive(Debug, Default)]
+pub struct AccountDeleteNotifier {
+    m_account_id: HashMap<AccountId, AccountDeleteSentStatus>,
+}
+impl AccountDeleteNotifier {
+    /// returns true if the account is ok to send.
+    /// false otherwise.
+    pub fn check_send(&mut self, header: &AccountHeader) -> bool {
+        let entry = self
+            .m_account_id
+            .entry(header.account_id)
+            .or_insert(AccountDeleteSentStatus::NotSent);
+        if 0 < header.lamports {
+            *entry = AccountDeleteSentStatus::Sent;
+            return true;
+        }
+        match entry {
+            AccountDeleteSentStatus::NotSent => {
+                // client has not seen this account
+                *entry = AccountDeleteSentStatus::DeleteSent;
+                false
+            }
+            AccountDeleteSentStatus::Sent => {
+                // client has seen this account
+                *entry = AccountDeleteSentStatus::DeleteSent;
+                true
+            }
+            AccountDeleteSentStatus::DeleteSent => false,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AccountDeleteSentStatus {
+    NotSent,
+    Sent,
+    DeleteSent,
 }
