@@ -45,18 +45,12 @@ fn main() {
     };
     let quic_client = match SolanaQuicClient::new(keypair, Some(config)) {
         Ok(x) => x,
-        Err(e) => panic!(
-            "quic client configuration failed: rpc url {}; error {}",
-            rpc_url, e
-        ),
+        Err(e) => panic!("quic client configuration failed: rpc url {rpc_url}; error {e}",),
     };
 
     let handler = match QuicRequestHandler::new(rpc_url.clone(), quic_client) {
         Ok(x) => x,
-        Err(e) => panic!(
-            "quic request handler failed: rpc url {}; error {}",
-            rpc_url, e
-        ),
+        Err(e) => panic!("quic request handler failed: rpc url {rpc_url}; error {e}",),
     };
     let p = PathBuf::from(std::env::var("BUFFER_PATH").expect("need BUFFER_PATH"));
     let max_client: usize = match std::env::var("MAX_CLIENT") {

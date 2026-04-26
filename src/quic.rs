@@ -488,10 +488,9 @@ impl QuicRequestHandler {
                         pending.retain(|b| now.duration_since(b.sent_at) < PENDING_TX_TTL);
                         for batch in &*pending {
                             for leader in &leaders {
-                                if let Err(e) = retry_quic.send_wire_transactions_batch(
-                                    leader.tpu_quic_addr,
-                                    &batch.txs,
-                                ) {
+                                if let Err(e) = retry_quic
+                                    .send_wire_transactions_batch(leader.tpu_quic_addr, &batch.txs)
+                                {
                                     debug!("retry send to {} failed: {e}", leader.tpu_quic_addr);
                                 }
                             }
