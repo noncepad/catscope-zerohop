@@ -19,6 +19,9 @@ pub enum CatscopeZerohopError {
 
     /// Network or connection error.
     ConnectionError(String),
+
+    ConnectionCanceled,
+    BufferFull,
 }
 
 impl From<CatscopeZerohopError> for TxFwdErrorCode {
@@ -31,6 +34,8 @@ impl From<CatscopeZerohopError> for TxFwdErrorCode {
             CatscopeZerohopError::OutofRange => 5,
             CatscopeZerohopError::ConfigError(_) => 6,
             CatscopeZerohopError::ConnectionError(_) => 7,
+            CatscopeZerohopError::ConnectionCanceled => 8,
+            CatscopeZerohopError::BufferFull => 9,
         }
     }
 }
@@ -43,9 +48,11 @@ impl std::fmt::Debug for CatscopeZerohopError {
             Self::NotImplemented => f.debug_tuple("Not implemented").finish(),
             Self::UnalignedMemory => f.debug_tuple("UnalignedMemory").finish(),
             Self::OutofRange => f.debug_tuple("OutofRange").finish(),
-            Self::TransactionFailure(e) => write!(f, "TransactionFailure {}", e),
+            Self::TransactionFailure(e) => write!(f, "TransactionFailure {e}"),
             Self::ConfigError(msg) => f.debug_tuple("ConfigError").field(msg).finish(),
             Self::ConnectionError(msg) => f.debug_tuple("ConnectionError").field(msg).finish(),
+            Self::ConnectionCanceled => f.debug_tuple("ConnectionCanceled").finish(),
+            Self::BufferFull => f.debug_tuple("BufferFull").finish(),
         }
     }
 }
@@ -58,9 +65,11 @@ impl std::fmt::Display for CatscopeZerohopError {
             Self::NotImplemented => f.debug_tuple("Not implemented").finish(),
             Self::UnalignedMemory => f.debug_tuple("UnalignedMemory").finish(),
             Self::OutofRange => f.debug_tuple("OutofRange").finish(),
-            Self::TransactionFailure(e) => write!(f, "TransactionFailure {}", e),
+            Self::TransactionFailure(e) => write!(f, "TransactionFailure {e}"),
             Self::ConfigError(msg) => f.debug_tuple("ConfigError").field(msg).finish(),
             Self::ConnectionError(msg) => f.debug_tuple("ConnectionError").field(msg).finish(),
+            Self::ConnectionCanceled => f.debug_tuple("ConnectionCanceled").finish(),
+            Self::BufferFull => f.debug_tuple("BufferFull").finish(),
         }
     }
 }
