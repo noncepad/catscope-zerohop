@@ -4,10 +4,8 @@ use crate::txfwd::TxFwdErrorCode;
 pub enum CatscopeZerohopError {
     Unknown(String),
     NotImplemented,
-
     /// Invalid or unsupported memory alignment.
     UnalignedMemory,
-
     /// A submitted transaction failed.
     TransactionFailure(Box<dyn std::error::Error + Send + Sync>),
 
@@ -19,7 +17,6 @@ pub enum CatscopeZerohopError {
 
     /// Network or connection error.
     ConnectionError(String),
-
     ConnectionCanceled,
     BufferFull,
 }
