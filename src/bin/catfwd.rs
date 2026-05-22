@@ -41,7 +41,7 @@ fn main() {
     let config = QuicClientConfig {
         connection_timeout: Duration::from_millis(1_000),
         skip_preflight: true,
-        connection_pool_size: 10,
+        connection_pool_size: 2,
     };
     let quic_client = match SolanaQuicClient::new(keypair, Some(config)) {
         Ok(x) => x,

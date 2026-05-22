@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use iceoryx2::prelude::ZeroCopySend;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use solana_client::rpc_client::RpcClient;
 use solana_connection_cache::client_connection::ClientConnection;
 use solana_connection_cache::connection_cache::NewConnectionConfig;
@@ -206,16 +206,16 @@ impl SolanaQuicClient {
         tpu_addr: SocketAddr,
         wire_transaction: &[u8],
     ) -> Result<(), CatscopeZerohopError> {
-        debug!("Sending transaction to TPU at {}", tpu_addr);
+        info!("Sending transaction to TPU at {}", tpu_addr);
 
         let connection = self.connection_cache.get_connection(&tpu_addr);
 
         connection.send_data(wire_transaction).map_err(|e| {
-            error!("Failed to send transaction to {}: {}", tpu_addr, e);
+            debug!("Failed to send transaction to {}: {}", tpu_addr, e);
             CatscopeZerohopError::ConnectionError(format!("QUIC send error: {}", e))
         })?;
 
-        debug!("Transaction sent successfully to {}", tpu_addr);
+        info!("Transaction sent successfully to {}", tpu_addr);
         Ok(())
     }
 
@@ -254,7 +254,7 @@ impl SolanaQuicClient {
         tpu_addr: SocketAddr,
         wire_transactions: &[Vec<u8>],
     ) -> Result<(), CatscopeZerohopError> {
-        debug!(
+        info!(
             "Sending batch of {} transactions to TPU at {}",
             wire_transactions.len(),
             tpu_addr
@@ -263,11 +263,11 @@ impl SolanaQuicClient {
         let connection = self.connection_cache.get_connection(&tpu_addr);
 
         connection.send_data_batch(wire_transactions).map_err(|e| {
-            error!("Failed to send transaction batch to {}: {}", tpu_addr, e);
+            debug!("Failed to send transaction batch to {}: {}", tpu_addr, e);
             CatscopeZerohopError::ConnectionError(format!("QUIC batch send error: {}", e))
         })?;
 
-        debug!(
+        info!(
             "Batch of {} transactions sent successfully to {}",
             wire_transactions.len(),
             tpu_addr
@@ -372,7 +372,7 @@ pub fn get_leader_tpu_addresses(
                 tpu_quic_addr,
             });
         } else {
-            warn!("No TPU address found for leader {leader} at slot {slot}",);
+            debug!("No TPU address found for leader {leader} at slot {slot}",);
         }
     }
 
@@ -443,7 +443,7 @@ impl QuicRequestHandler {
         let initial = match get_leader_tpu_addresses(&rpc, Some(8)) {
             Ok(leaders) => leaders,
             Err(e) => {
-                warn!("initial leader fetch failed, background thread will retry: {e}");
+                debug!("initial leader fetch failed, background thread will retry: {e}");
                 Vec::new()
             }
         };
@@ -497,7 +497,7 @@ impl QuicRequestHandler {
                         }
                     }
                     Err(e) => {
-                        warn!("leader refresh failed: {e}");
+                        debug!("leader refresh failed: {e}");
                         // Back off up to 5 s so we don't hammer a flaky RPC.
                         sleep_ms = (sleep_ms * 2).min(5_000);
                     }
