@@ -65,16 +65,16 @@ fn route(key: &Pubkey, n_shards: u64) -> (u64, usize) {
 ///
 /// * `queue`          – Shared source queue. Producers push [`Pubkey`]s here.
 /// * `done`           – Set to `true` **after** all producers have finished
-///                      enqueuing. The readers perform one final drain after
-///                      observing this flag and then shut down.
+///   enqueuing. The readers perform one final drain after
+///   observing this flag and then shut down.
 /// * `n_shards`       – Number of independent shards. One OS thread is spawned
-///                      per shard. Recommended: `num_cpus::get()` or a power of two.
+///   per shard. Recommended: `num_cpus::get()` or a power of two.
 /// * `n_readers`      – Threads that pop from the queue and route keys.
-///                      2–4 is typically optimal; more can saturate the queue.
+///   2–4 is typically optimal; more can saturate the queue.
 /// * `capacity_hint`  – Expected unique keys *per shard* for `HashSet`
-///                      pre-sizing. Pass `0` to skip pre-allocation.
+///   pre-sizing. Pass `0` to skip pre-allocation.
 /// * `on_key`         – Called once per unique [`Pubkey`] within its shard.
-///                      Signature: `fn(shard_id: usize, hash: u64, key: Pubkey)`.
+///   Signature: `fn(shard_id: usize, hash: u64, key: Pubkey)`.
 ///
 /// # Completion channel
 ///
@@ -294,17 +294,10 @@ mod tests {
         done.store(true, Ordering::Release);
 
         // Verify each key is routed to the shard that matches its hash.
-        let rx = shard_dedup_pubkeys(
-            queue,
-            done,
-            N_SHARDS,
-            2,
-            0,
-            move |shard_id, hash, _key| {
-                let expected = (hash % N_SHARDS as u64) as usize;
-                assert_eq!(shard_id, expected, "key routed to wrong shard");
-            },
-        );
+        let rx = shard_dedup_pubkeys(queue, done, N_SHARDS, 2, 0, move |shard_id, hash, _key| {
+            let expected = (hash % N_SHARDS as u64) as usize;
+            assert_eq!(shard_id, expected, "key routed to wrong shard");
+        });
         rx.recv().unwrap();
     }
 }

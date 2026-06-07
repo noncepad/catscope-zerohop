@@ -1,27 +1,18 @@
 use super::proto::{
-    ApiDescription, CapacityRequest, CapacityStatus, EndpointRequest, EndpointResponse,
-    InformationRequest, StatusRequest, Usage,
+    CapacityRequest, CapacityStatus,
     capacity_server::{Capacity, CapacityServer},
-    endpoint_server::{Endpoint, EndpointServer},
-    information_server::{Information, InformationServer},
-    meter_server::{Meter, MeterServer},
 };
-use crate::read::GraphClient;
 use crate::usage::Capacity as UsageCapacity;
-use crate::write::TransactionProcessor;
 use crate::{
     err::CatscopeZerohopError,
     plugin::{CatscopeReader, CatscopeWriter},
 };
 use log::{debug, warn};
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify};
-use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 use tonic::transport::server::Router;
-use tonic::{Request, Response, Status, transport::Server};
+use tonic::{Request, Response, Status};
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 

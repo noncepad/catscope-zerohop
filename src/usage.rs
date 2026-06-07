@@ -1,5 +1,3 @@
-use crate::read::ClientId;
-
 #[derive(Clone, Copy)]
 pub enum Usage {
     /// specifies what percent of total capacity has been used

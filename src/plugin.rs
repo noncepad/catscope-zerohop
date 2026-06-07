@@ -16,7 +16,6 @@ use crate::{
 ///
 /// A plugin is loaded by the ZeroHop host, given read/write handles into the
 /// validator-local runtime, and expected to manage its own lifecycle.
-
 /// Main interface that every ZeroHop plugin must implement.
 ///
 /// The host owns plugin creation and destruction. Plugins are notified

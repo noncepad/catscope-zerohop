@@ -89,10 +89,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::plugin::init_logger;
-    use crate::quic::{
-        QuicRequestHandler, SolanaQuicClient, TransactionRequest, TransactionResponse,
-    };
 
     use super::*;
     use std::sync::Arc;
@@ -361,7 +357,8 @@ mod tests {
             let server_result = server_handle.join().expect("Server thread panicked");
 
             // Verify this cycle worked correctly
-            let responses = client_result.expect(&format!("Client failed on cycle {}", cycle));
+            let responses =
+                client_result.unwrap_or_else(|_| panic!("Client failed on cycle {}", cycle));
             assert_eq!(
                 responses.len(),
                 REQUESTS_PER_CYCLE,
@@ -384,7 +381,7 @@ mod tests {
             }
 
             let server_responses =
-                server_result.expect(&format!("Server failed on cycle {}", cycle));
+                server_result.unwrap_or_else(|_| panic!("Server failed on cycle {}", cycle));
             assert_eq!(
                 server_responses.len(),
                 REQUESTS_PER_CYCLE,

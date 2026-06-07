@@ -1,14 +1,9 @@
+use lockfree::queue::Queue;
+use std::sync::atomic::Ordering;
 use std::{
     mem::MaybeUninit,
-    sync::{
-        Arc,
-        atomic::{self, AtomicUsize},
-    },
+    sync::{Arc, atomic::AtomicUsize},
 };
-
-use lockfree::queue::Queue;
-use log::{error, warn};
-use std::sync::atomic::{AtomicPtr, Ordering};
 
 /// A lock-free queue implementation with optional element counting.
 ///
@@ -241,6 +236,7 @@ impl<T> QueueIterator<T> {
     ///
     /// # Returns
     /// The estimated number of items to be iterated
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.len
     }

@@ -50,6 +50,7 @@ impl TransactionRing {
         }
         let slots = slots_vec.into_boxed_slice().try_into().unwrap();
 
+        #[allow(clippy::arc_with_non_send_sync)]
         Self {
             inner: Arc::new(RingBufferInner {
                 write_cursor: AtomicU64::new(0),

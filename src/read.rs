@@ -1,19 +1,17 @@
-use std::{
-    collections::{HashMap, HashSet},
-    hash::BuildHasherDefault,
-    sync::{Arc, atomic::AtomicU32},
-};
-
 use crate::{
     err::CatscopeZerohopError,
     store::{
-        AccountHeader, AccountId, BlobView, CatscopeTransaction, CatscopeTransactionResult, Depth,
-        RollingWindow, SlotWithStatus, SolanaAccount, TransactionResult, Weight,
+        AccountHeader, AccountId, CatscopeTransactionResult, Depth, SlotWithStatus, SolanaAccount,
+        Weight,
     },
-    usage::{Capacity, Usage},
+    usage::Capacity,
 };
-use solana_sdk::{
-    clock::Slot, hash::Hash, pubkey::Pubkey, signature::Signature, transaction::TransactionError,
+use solana_pubkey::Pubkey;
+use solana_sdk::{clock::Slot, hash::Hash, signature::Signature};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::BuildHasherDefault,
+    sync::Arc,
 };
 use twox_hash::XxHash64;
 
@@ -101,7 +99,7 @@ pub trait PubkeyMap: Send + Sync {
 /// - where to start (root)
 /// - how far to expand (depth)
 /// - what signal to ignore (weight threshold)
-
+///
 /// Identifier for a plugin read connection. Created on `connect()` and owns all subscriptions.
 pub type ClientId = u32;
 
@@ -143,7 +141,7 @@ pub trait CatscopeBuffer: Send + Sync {
     /// poll returns references to non-finalized accounts and transactions.
     fn poll<'a, 'b: 'a>(
         &'b mut self,
-        hs_account_id: &'b HashSet<AccountId, BuildHasherDefault<XxHash64>>,
+        o_hs_account_id: Option<&'b HashSet<AccountId, BuildHasherDefault<XxHash64>>>,
         o_hs_signature: Option<&'b HashSet<Signature, BuildHasherDefault<XxHash64>>>,
     ) -> Option<StateWindow<'a>>;
 }
@@ -172,6 +170,12 @@ pub trait CatscopeReadChannelGroup: Send + Sync {
         filter_weight: Weight,
         depth: Depth,
     ) -> Result<SubscriptionId, CatscopeZerohopError>;
+
+    /// Bulk request a new subscription.
+    fn bulk_subscribe(
+        &self,
+        l_detail: Vec<SubscriptionDetail>,
+    ) -> Result<Vec<SubscriptionId>, CatscopeZerohopError>;
 }
 
 // ======================================================================
@@ -185,8 +189,6 @@ pub trait CatscopeReadChannelGroup: Send + Sync {
 /// * `Ack` - TODO: Document acknowledgment events
 /// * `Commit` - TODO: Document commit events
 pub enum Event {
-    /// notification that a subscription has landed
-    Ack(SubscriptionId),
     /// finalized account state
     Commit(Box<dyn Commit>),
     /// get the unconfirmed account and transactions as they arrive over the gossip protocol
@@ -205,6 +207,9 @@ pub enum Event {
 pub trait Commit: Send + Sync {
     /// Slot in which these updates were finalized.
     fn slot(&self) -> Slot;
+
+    /// Get a list of subscription registration notifications
+    fn ack(&self) -> &[SubscriptionId];
 
     /// Returns the next account that changed in this slot.
     /// Returns `None` when all updates for the slot have been consumed.
@@ -248,9 +253,9 @@ impl AccountDeleteNotifier {
         }
         match entry {
             AccountDeleteSentStatus::NotSent => {
-                // client has not seen this account
+                // client has not seen this account yet; still deliver so they know it exists
                 *entry = AccountDeleteSentStatus::DeleteSent;
-                false
+                true
             }
             AccountDeleteSentStatus::Sent => {
                 // client has seen this account

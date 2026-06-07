@@ -4,15 +4,9 @@ use solana_sdk::{
     clock::Slot, instruction::InstructionError, pubkey::Pubkey, signature::Signature,
     transaction::TransactionError,
 };
-use std::alloc::{Layout, alloc, alloc_zeroed};
 use std::time::{Duration, Instant};
 /// Core data structures shared between the CatScope runtime and plugins.
-use std::{
-    collections::HashSet,
-    marker::PhantomData,
-    mem::MaybeUninit,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{marker::PhantomData, mem::MaybeUninit, sync::Arc};
 use wincode::{SchemaRead, SchemaWrite};
 
 use crate::{
@@ -42,7 +36,6 @@ pub type AccountId = u64;
 /// ======================================================================
 /// SHARED MEMORY & ZERO-COPY PRIMITIVES
 /// ======================================================================
-
 /// Combined read/write interface for a shared memory blob.
 pub trait BlobInterface: BlobView + BlobWrite {}
 
@@ -57,12 +50,12 @@ impl<T: Sized> NamedBlob<T> {
     pub fn new(blob: Arc<dyn BlobInterface>) -> Result<Self, CatscopeZerohopError> {
         let slice = blob.slice();
         let t_len = std::mem::size_of::<T>();
-        if slice.len() % t_len != 0 {
+        if !slice.len().is_multiple_of(t_len) {
             return Err(CatscopeZerohopError::UnalignedMemory);
         }
         Ok(NamedBlob {
             blob,
-            _d: PhantomData::default(),
+            _d: PhantomData,
         })
     }
 
@@ -93,7 +86,6 @@ pub trait BlobWrite: Send + Sync {
 pub trait BlobView: Send + Sync {
     fn len(&self) -> usize;
     /// Get the length of the slice.
-
     /// Is the slice empty
     fn is_empty(&self) -> bool {
         self.len() == 0
@@ -106,7 +98,6 @@ pub trait BlobView: Send + Sync {
 /// ======================================================================
 /// SOLANA ACCOUNT SNAPSHOTS
 /// ======================================================================
-
 /// Finalized snapshot of a Solana account.
 #[derive(Clone)]
 pub struct SolanaAccount {
@@ -127,6 +118,7 @@ impl SolanaAccount {
             ticket: write_version,
         }
     }
+    /// slice returns the header and body.
     pub fn slice(&self) -> &[u8] {
         self.blob.slice()
     }
@@ -180,7 +172,6 @@ impl std::fmt::Debug for SolanaAccount {
 /// ======================================================================
 /// ACCOUNT GRAPH MODEL
 /// ======================================================================
-
 /// This is weight on a graph edge.
 pub type Weight = u32;
 
@@ -210,6 +201,7 @@ impl PartialEq for AccountEdge {
     }
 }
 
+#[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for AccountEdge {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match self.from.partial_cmp(&other.from) {
@@ -230,9 +222,9 @@ impl PartialOrd for AccountEdge {
         }
         let ord = self.weight.partial_cmp(&other.weight);
         if ord.is_some() {
-            return ord;
+            ord
         } else {
-            return Some(std::cmp::Ordering::Equal);
+            Some(std::cmp::Ordering::Equal)
         }
     }
 }
@@ -273,8 +265,8 @@ pub struct AccountHeader {
     /// the program that owns this account. If executable, the program that loads this account.
     pub owner: Pubkey,
 
-    ///  the epoch at which this account will next owe rent
-    pub rent_epoch: u64,
+    ///  the monotonically increasing account version number local to the validator
+    pub write_version: u64,
 
     // the slot at which the transaction was registered
     pub slot: u64,
@@ -291,7 +283,7 @@ impl AccountHeader {
         self.owner = self.pubkey;
         self.lamports = 0;
         self.account_id = 0;
-        self.rent_epoch = 0;
+        self.write_version = 0;
         self.slot = 0;
         self.data_size = 0;
         self.executable = false;
@@ -368,7 +360,6 @@ pub struct TransactionResultHeader {
 /// ======================================================================
 /// TRANSACTION RESULTS
 /// ======================================================================
-
 pub struct TransactionResult {
     /// Decoded transaction and instruction data
     pub transaction: CatscopeTransaction,
@@ -585,10 +576,11 @@ impl<'a> TryFrom<&'a [u8]> for CatscopeTransactionReadWrapper<'a> {
                 return Err(CatscopeZerohopError::OutofRange);
             }
             let ptr = data[start..end].as_ptr() as *const T;
-            if (ptr as usize) % align_of::<T>() != 0 {
+            if !(ptr as usize).is_multiple_of(align_of::<T>()) {
                 return Err(CatscopeZerohopError::UnalignedMemory);
             }
             *offset = end;
+            #[allow(unsafe_op_in_unsafe_fn)]
             Ok(std::slice::from_raw_parts(ptr, count))
         }
 
@@ -601,7 +593,7 @@ impl<'a> TryFrom<&'a [u8]> for CatscopeTransactionReadWrapper<'a> {
         // both the length and alignment of the buffer.
         let hdr = unsafe {
             let ptr = data.as_ptr() as *const CatscopeTransactionHeader;
-            if (ptr as usize) % std::mem::align_of::<CatscopeTransactionHeader>() != 0 {
+            if !(ptr as usize).is_multiple_of(std::mem::align_of::<CatscopeTransactionHeader>()) {
                 return Err(CatscopeZerohopError::UnalignedMemory);
             }
             &*ptr
@@ -663,12 +655,6 @@ impl Default for CatscopeTransaction {
     }
 }
 
-const OUTER_MAX: usize = 512;
-const INNER_MAX: usize = 512;
-const ACCOUNT_MAX: usize = 512;
-const DATA_MAX: usize = 4 * 1024;
-
-const CAP: usize = 1024;
 impl CatscopeTransaction {
     /// Set the number of outer instructions and return a mutable slice.
     pub fn append_outer<'a, 'b: 'a>(&'b mut self) -> CatscopeInstructionWrite<'a> {
@@ -793,8 +779,7 @@ impl<'a> Iterator for CatscopeInstructionReadOuterIterator<'a> {
 ///
 /// * MAX_DATA: 2048 bytes
 /// * ACCOUNT_MAX: 256 accounts
-
-/// A single CatScope instrcution
+///   A single CatScope instrcution
 ///
 /// This is used to record what was executed during transaction processing,
 /// both for instructions explicitly submitted by the client and instructions
@@ -1109,6 +1094,7 @@ fn encode_instruction_error(ie: &InstructionError) -> (u8, u32) {
         InstructionError::DuplicateAccountIndex => (16, 0),
         InstructionError::ExecutableModified => (17, 0),
         InstructionError::RentEpochModified => (18, 0),
+        #[allow(deprecated)]
         InstructionError::NotEnoughAccountKeys => (19, 0),
         InstructionError::AccountDataSizeChanged => (20, 0),
         InstructionError::AccountNotExecutable => (21, 0),
@@ -1222,6 +1208,7 @@ fn decode_instruction_error(
         16 => InstructionError::DuplicateAccountIndex,
         17 => InstructionError::ExecutableModified,
         18 => InstructionError::RentEpochModified,
+        #[allow(deprecated)]
         19 => InstructionError::NotEnoughAccountKeys,
         20 => InstructionError::AccountDataSizeChanged,
         21 => InstructionError::AccountNotExecutable,
@@ -1277,8 +1264,8 @@ pub trait RollingWindow: Send + Sync {
 }
 
 mod tests {
-    use solana_sdk::pubkey::Pubkey;
 
+    #[allow(unused_imports)]
     use crate::store::{AccountId, CatscopeTransaction};
 
     #[test]

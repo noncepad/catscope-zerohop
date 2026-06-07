@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use iceoryx2::prelude::ZeroCopySend;
-use log::{debug, error, info, warn};
+use log::{debug, info};
 use solana_client::rpc_client::RpcClient;
 use solana_connection_cache::client_connection::ClientConnection;
 use solana_connection_cache::connection_cache::NewConnectionConfig;
@@ -232,10 +232,8 @@ impl SolanaQuicClient {
         tpu_addr: SocketAddr,
         transactions: &[VersionedTransaction],
     ) -> Result<(), CatscopeZerohopError> {
-        let wire_txs: Result<Vec<Vec<u8>>, _> = transactions
-            .iter()
-            .map(|tx| bincode::serialize(tx))
-            .collect();
+        let wire_txs: Result<Vec<Vec<u8>>, _> =
+            transactions.iter().map(bincode::serialize).collect();
 
         let wire_txs = wire_txs.map_err(|e| {
             CatscopeZerohopError::ConfigError(format!("Serialization error: {}", e))

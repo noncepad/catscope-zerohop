@@ -20,6 +20,8 @@ pub trait TransactionProcessor: Send + Sync + Capacity {
     /// Returns the first error encountered while sending the batch.
     fn batch(&self, client_id: ClientId, bundle: &[&[u8]]) -> Result<(), CatscopeZerohopError> {
         let n = bundle.len();
+
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             let single = bundle[i];
             self.send(client_id, single)?;

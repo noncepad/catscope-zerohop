@@ -30,9 +30,7 @@ pub fn as_bytes<T: Sized>(val: &T) -> &[u8] {
 }
 
 pub fn as_bytes_slice<T: Sized>(s: &[T]) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(s.as_ptr() as *const u8, s.len() * std::mem::size_of::<T>())
-    }
+    unsafe { std::slice::from_raw_parts(s.as_ptr() as *const u8, std::mem::size_of_val(s)) }
 }
 
 pub struct TokenReference<'a> {
@@ -41,35 +39,38 @@ pub struct TokenReference<'a> {
     pub amount: u64,
 }
 
-//TODO: add in the rest of the token parameters like delegate account
+// SPL token account layout (no extensions): 165 bytes total.
+// Byte 108 is the `state` field: 1=Initialized, 2=Frozen.
+// Token-2022 accounts with extensions are > 165 bytes but still have the
+// same header layout and state byte.
+const TOKEN_ACCOUNT_MIN_SIZE: usize = 165;
+const TOKEN_ACCOUNT_STATE_OFFSET: usize = 108;
+
 pub fn parse_token<'a, 'b: 'a>(data: &'b [u8]) -> Result<TokenReference<'a>, CatscopeZerohopError> {
     let p_len = std::mem::size_of::<Pubkey>();
     let amt_len = std::mem::size_of::<u64>();
-    let mut index = 0;
-    if index + p_len < data.len() {
+    if data.len() < TOKEN_ACCOUNT_MIN_SIZE {
         return Err(CatscopeZerohopError::OutofRange);
     }
+    let state = data[TOKEN_ACCOUNT_STATE_OFFSET];
+    if state != 1 && state != 2 {
+        return Err(CatscopeZerohopError::OutofRange);
+    }
+    let mut index = 0;
     let mint = unsafe {
         let subbuf = &data[index..(index + p_len)];
         index += p_len;
         let ptr = subbuf.as_ptr() as *const Pubkey;
         &*ptr
     };
-    if index + p_len < data.len() {
-        return Err(CatscopeZerohopError::OutofRange);
-    }
     let owner = unsafe {
         let subbuf = &data[index..(index + p_len)];
         index += p_len;
         let ptr = subbuf.as_ptr() as *const Pubkey;
         &*ptr
     };
-    if index + p_len < data.len() {
-        return Err(CatscopeZerohopError::OutofRange);
-    }
     let amount = {
         let s = &data[index..(index + amt_len)];
-        //        index += amt_len;
         let subbuf: [u8; 8] = s.try_into().unwrap();
         u64::from_le_bytes(subbuf)
     };
