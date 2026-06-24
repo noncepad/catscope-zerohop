@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "catscope-zerohop"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "agave-geyser-plugin-interface",
  "bincode",
@@ -766,6 +766,7 @@ dependencies = [
  "solana-sdk",
  "solana-streamer",
  "solana-tpu-client",
+ "solana-transaction-error",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -1906,7 +1907,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tokio",
  "tower-service",
  "tracing",
@@ -3002,7 +3003,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.12.1",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
@@ -3022,7 +3023,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -3059,7 +3060,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3098,7 +3099,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -5518,9 +5519,9 @@ dependencies = [
 
 [[package]]
 name = "solana-transaction-error"
-version = "3.2.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2441d6dcd51100e7d97c3fb3b723e08aa701066ff7afc00026fd8d8e222cb95b"
+checksum = "757a648388ab1e7350a806ffceb31ce656dc5b5fe607b9f8209aa56f63040179"
 dependencies = [
  "serde",
  "serde_derive",

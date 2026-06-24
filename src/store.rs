@@ -1069,6 +1069,7 @@ fn encode_tx_error(e: &TransactionError) -> (u8, u8, u8, u32) {
         TransactionError::UnbalancedTransaction => (36, 0, 0, 0),
         TransactionError::ProgramCacheHitMaxLimit => (37, 0, 0, 0),
         TransactionError::CommitCancelled => (38, 0, 0, 0),
+        TransactionError::InstructionsSysvarOverflow => (39, 0, 0, 0),
     }
 }
 
@@ -1179,6 +1180,7 @@ fn decode_tx_error(
         36 => TransactionError::UnbalancedTransaction,
         37 => TransactionError::ProgramCacheHitMaxLimit,
         38 => TransactionError::CommitCancelled,
+        39 => TransactionError::InstructionsSysvarOverflow,
         _ => return Err(CatscopeZerohopError::OutofRange),
     };
     Ok(e)
