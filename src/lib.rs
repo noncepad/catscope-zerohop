@@ -7,6 +7,7 @@
 /// utilities required for low-latency plugin execution.
 ///
 pub mod buffer;
+pub mod edge;
 pub mod config;
 pub mod err;
 pub mod plugin;
