@@ -6,8 +6,7 @@ use crate::{
     },
     usage::Capacity,
 };
-use solana_pubkey::Pubkey;
-use solana_sdk::{clock::Slot, hash::Hash, signature::Signature};
+use solana_sdk::{clock::Slot, hash::Hash, pubkey::Pubkey, signature::Signature};
 use std::{
     collections::{HashMap, HashSet},
     hash::BuildHasherDefault,

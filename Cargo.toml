@@ -1,6 +1,6 @@
 [package]
 name = "catscope-zerohop"
-version = "0.5.1"
+version = "0.5.2"
 
 edition = "2024"
 
@@ -20,7 +20,7 @@ env_logger = "0.11.8"
 twox-hash = "2.1.2"
 agave-geyser-plugin-interface = "=4.1.0-rc.1"
 solana-sdk = "=4.0.0"
-solana-pubkey = { version = "=4.2.0", features = ["curve25519"] }
+#solana-pubkey = { version = "=4.2.0", features = ["curve25519"] }
 flume = "0.11"
 iceoryx2 = "0.6"
 crossbeam-channel = "0.5.15"
@@ -56,4 +56,5 @@ solana-client = { git = "https://git.noncepad.com/solana.git", tag = "v4.1.0-rc.
 solana-connection-cache = { git = "https://git.noncepad.com/solana.git", tag = "v4.1.0-rc.1-catscope" }
 solana-tpu-client = { git = "https://git.noncepad.com/solana.git", tag = "v4.1.0-rc.1-catscope" }
 solana-quic-client = { git = "https://git.noncepad.com/solana.git", tag = "v4.1.0-rc.1-catscope" }
+solana-transaction-status = { git = "https://git.noncepad.com/solana.git", tag = "v4.1.0-rc.1-catscope" }
 solana-streamer = { git = "https://git.noncepad.com/solana.git", tag = "v4.1.0-rc.1-catscope" }

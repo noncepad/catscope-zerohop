@@ -777,7 +777,6 @@ dependencies = [
  "signal-hook",
  "solana-client",
  "solana-connection-cache",
- "solana-pubkey 4.2.0",
  "solana-quic-client",
  "solana-sdk",
  "solana-streamer",
